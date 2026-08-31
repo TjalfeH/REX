@@ -27,7 +27,11 @@ def square():
         driveForward()
         turnRight()
 
-while True:
-	square()
+try:
+
+    while True:
+	    square()
+except KeyboardInterrupt:
+    print("Program stopped by user")
 
 arlo.stop()
