@@ -5,10 +5,26 @@ arlo = robot.Robot()
 
 print("Running ...")
 
-leftSpeed = 128
-rightSpeed = 128
-print(arlo.go_diff(leftSpeed, rightSpeed, 1, 1))
 
-sleep(3);
+def turnRight():
+    leftSpeed = 85
+    rightSpeed = 85
+    print(arlo.go_diff(leftSpeed, rightSpeed, 1, 0))
 
-print(arlo.stop())
+    sleep(0.6)
+    print(arlo.stop())
+
+def driveForward():
+    leftSpeed = 85
+    rightSpeed = 85
+    print(arlo.go_diff(leftSpeed, rightSpeed, 1, 1))
+
+    sleep(0.6)
+    print(arlo.stop())
+
+def square():
+    for i in range(4):
+        driveForward()
+        turnRight()
+square()
+arlo.stop()
