@@ -7,7 +7,7 @@ print("Running ...")
 
 def circle():
 
-    leftSpeed = 80
+    leftSpeed = 100
     rightSpeed = 80
     for i in range(4):
         print(arlo.go_diff(leftSpeed, rightSpeed/2, 1, 1))
