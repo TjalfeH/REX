@@ -14,3 +14,6 @@ def circle():
         sleep(0.5)
     
     print(arlo.stop())
+
+circle()
+arlo.stop()
