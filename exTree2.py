@@ -60,7 +60,7 @@ for K in [20, 100, 1000]:
 
     plt.hist(
         result,
-        bins=50,
+        bins=20,
         range=(X_MIN, X_MAX),
         density=True,
         alpha=0.6,
