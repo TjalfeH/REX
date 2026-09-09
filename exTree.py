@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-np.random.seed = "42";
+np.random.seed(42);
 
 # Normal destribition pdf
 def norm_pdf(x, mean, std):
@@ -49,7 +49,10 @@ def sir(K):
 # Histogram of the samples together with the wanted pose distribution p(x)
 # It plots three histogram for 
 
-x = np.linspace(-2, 15, 1000)
+
+X_MIN, X_MAX = -5.0, 20.0
+
+x = np.linspace(X_MIN, X_MAX, 1000)
 
 for K in [20, 100, 1000]:
     result = sir(K)
@@ -58,11 +61,14 @@ for K in [20, 100, 1000]:
 
     plt.hist(
         result,
-        bins=20,
+        bins=50,
         density=True,
+        range=(X_MIN, X_MAX),
         alpha=0.6,
         label="Resampled samples"
     )
+
+    plt.xlim(X_MIN, X_MAX)
 
     plt.plot(
         x,
