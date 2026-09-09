@@ -10,7 +10,7 @@ def norm_pdf(x, mean, std):
 
 # Uniform proposal distribution q(x)
 def props_dist(x):
-    return np.ones_like(x) / 15.0
+    return norm_pdf(x, 5, 2)
 
 #Target sidtributing from the task
 def targ_dist(x):
@@ -23,7 +23,7 @@ def targ_dist(x):
 # k- random x
 def sir(K):
 
-    make_sampel= np.random.uniform(0, 15, K)
+    make_sampel = np.random.normal(5, 2, K)
 
     # p(x)/ p(q)
     weight=(
@@ -41,7 +41,7 @@ def sir(K):
         replace=True,
         p=weight
     )
-
+    
     return resam_higer
 
 # Histogram of the samples together with the wanted pose distribution p(x)
@@ -59,7 +59,7 @@ for K in [20, 100, 1000]:
         bins=20,
         density=True,
         alpha=0.6,
-        label="Resampled samples"
+        label="Resampled samples Normal"
     )
 
     plt.plot(
