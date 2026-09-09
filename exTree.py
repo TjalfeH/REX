@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+np.random.seed = "42";
+
 # Normal destribition pdf
 def norm_pdf(x, mean, std):
     return(

@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+np.random.seed = "42";
+
 # Normal destribition pdf
 def norm_pdf(x, mean, std):
     return(
@@ -10,7 +12,7 @@ def norm_pdf(x, mean, std):
 
 # Uniform proposal distribution q(x)
 def props_dist(x):
-    return norm_pdf(x, 5, 2)
+    return norm_pdf(x, 5, 4)
 
 #Target sidtributing from the task
 def targ_dist(x):
@@ -23,7 +25,7 @@ def targ_dist(x):
 # k- random x
 def sir(K):
 
-    make_sampel = np.random.normal(5, 2, K)
+    make_sampel = np.random.normal(5, 4, K)
 
     # p(x)/ p(q)
     weight=(
