@@ -6,8 +6,8 @@ import robot
 import numpy
 
 marker_length = 0.145
-camera_matrix = numpy.array([[1800,  0, 820],
-                            [ 0, 1800, 616],
+camera_matrix = numpy.array([[1350,  0, 820],
+                            [ 0, 1350, 616],
                             [ 0,  0,  1]])
 dist_coeffs = numpy.array([0,0,0,0,0])
 
