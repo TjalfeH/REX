@@ -20,9 +20,7 @@ time.sleep(1)
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 
 corners, ids, _ = cv2.aruco.detectMarkers(cam.capture_array(), aruco_dict)
-rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-corners, marker_length, camera_matrix, dist_coeffs
-)
+_, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, marker_length, camera_matrix, dist_coeffs)
 
 for tvec in tvecs:
     x, y, z = tvec[0]
