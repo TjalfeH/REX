@@ -18,11 +18,11 @@ cam.close()
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 corners, ids, _ = cv2.aruco.detectMarkers(image, aruco_dict)
 if ids is None:
-    print("Keine Landmarken gefunden")
+    print("No Landmarks detected")
     exit()
 
 _, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, MARKER_LENGTH, K, np.zeros(5))
-
+^
 karte = np.full((800, 800, 3), 255, np.uint8)
 cv2.line(karte, (400, 0), (400, 800), (200, 200, 200))
 for meter in range(1, 5):
