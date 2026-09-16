@@ -6,10 +6,10 @@ import robot
 import numpy
 
 marker_length = 0.055
-camera_matrix = [[1800,  0, 820],
+camera_matrix = numpy.array[[1800,  0, 820],
                  [ 0, 1800, 616],
                  [ 0,  0,  1]]
-dist_coeffs = [0,0,0,0,0]
+dist_coeffs = numpy.array[0,0,0,0,0]
 
 arlo = robot.Robot()
 cam = picamera2.Picamera2()
