@@ -6,10 +6,10 @@ import robot
 import numpy
 
 marker_length = 0.145
-camera_matrix = numpy.array[[1800,  0, 820],
-                 [ 0, 1800, 616],
-                 [ 0,  0,  1]]
-dist_coeffs = numpy.array[0,0,0,0,0]
+camera_matrix = numpy.array([[1800,  0, 820],
+                            [ 0, 1800, 616],
+                            [ 0,  0,  1]])
+dist_coeffs = numpy.array([0,0,0,0,0])
 
 arlo = robot.Robot()
 cam = picamera2.Picamera2()
@@ -26,5 +26,3 @@ for tvec in tvecs:
     x, y, z = tvec[0]
     distance = numpy.sqrt(x**2 + y**2 + z**2)
     print(f"Distance to marker: {distance:.3f} meters")
-
-print(distance)
