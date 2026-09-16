@@ -3,6 +3,7 @@ import time
 import cv2
 import picamera2
 import robot
+import numpy
 
 marker_length = 0.055
 camera_matrix = [[1800,  0, 820],
