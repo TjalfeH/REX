@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import picamera2
 
-MARKER_LENGTH = 0.145
+MARKER_LENGTH = 0.05
 SCALE = 150
 K = np.array([[1687, 0, 820], [0, 1687, 616], [0, 0, 1]], dtype=np.float64)
 
@@ -22,7 +22,6 @@ if ids is None:
     exit()
 
 _, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, MARKER_LENGTH, K, np.zeros(5))
-^
 karte = np.full((800, 800, 3), 255, np.uint8)
 cv2.line(karte, (400, 0), (400, 800), (200, 200, 200))
 for meter in range(1, 5):
