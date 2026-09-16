@@ -6,10 +6,11 @@ import picamera2
 
 MARKER_LENGTH = 0.145
 SCALE = 150
-K = np.array([[1687, 0, 820], [0, 1687, 616], [0, 0, 1]], dtype=np.float64)
+K = np.array([[1800, 0, 820], [0, 1800, 616], [0, 0, 1]], dtype=np.float64)
+DIST = np.zeros(5)
 
 cam = picamera2.Picamera2()
-cam.configure(cam.create_video_configuration({"size": (1640, 1232), "format": "RGB888"}))
+cam.configure(cam.create_video_configuration({"size": (1640, 1232), "format": "RGB888"}, queue=False))
 cam.start()
 time.sleep(1)
 image = cam.capture_array()
@@ -21,7 +22,8 @@ if ids is None:
     print("No Landmarks detected")
     exit()
 
-_, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, MARKER_LENGTH, K, np.zeros(5))
+_, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, MARKER_LENGTH, K, DIST)
+
 karte = np.full((800, 800, 3), 255, np.uint8)
 cv2.line(karte, (400, 0), (400, 800), (200, 200, 200))
 for meter in range(1, 5):
@@ -32,7 +34,9 @@ cv2.circle(karte, (400, 750), 12, (0, 0, 255), -1)
 
 for i in range(len(ids)):
     x, y, z = tvecs[i][0]
-    print("ID", ids[i][0], "x =", x, "z =", z)
+    distance = np.sqrt(x**2 + y**2 + z**2)
+    print(f"ID {ids[i][0]}: Distanz {distance:.3f} m  (x = {x:.3f}, z = {z:.3f})")
+
     px = int(400 + x * SCALE)
     py = int(750 - z * SCALE)
     cv2.circle(karte, (px, py), 10, (255, 0, 0), -1)
