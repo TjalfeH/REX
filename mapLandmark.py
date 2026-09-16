@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import picamera2
 
-MARKER_LENGTH = 0.05
+MARKER_LENGTH = 0.145
 SCALE = 150
 K = np.array([[1687, 0, 820], [0, 1687, 616], [0, 0, 1]], dtype=np.float64)
 
