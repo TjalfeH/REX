@@ -5,7 +5,7 @@ import picamera2
 import robot
 import numpy
 
-marker_length = 0.055
+marker_length = 0.145
 camera_matrix = numpy.array[[1800,  0, 820],
                  [ 0, 1800, 616],
                  [ 0,  0,  1]]
