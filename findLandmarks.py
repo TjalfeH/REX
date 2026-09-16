@@ -13,7 +13,7 @@ MARKER_LENGTH = 0.145
 STOP_DIST = 0.4
 
 K = np.array([[1687, 0, 820], [0, 1687, 616], [0, 0, 1]], dtype=np.float64)
-detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250))
+aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
 
 arlo = robot.Robot()
 cam = picamera2.Picamera2()
@@ -24,10 +24,10 @@ time.sleep(1)
 
 def look():
     time.sleep(0.3)
-    corners, ids, _ = detector.detectMarkers(cam.capture_array())
+    corners, ids, _ = cv2.aruco.detectMarkers(cam.capture_array(), aruco_dict)
     if ids is None:
         return None
-    _, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, MARKER_LENGTH, K, None)
+    _, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, MARKER_LENGTH, K, np.zeros(5))
     x, y, z = tvecs[0][0]
     return math.hypot(x, z), math.atan2(x, z)
 
