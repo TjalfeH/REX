@@ -11,5 +11,6 @@
         "statusBar.debuggingForeground": "#FFFCFD",
         "statusBar.noFolderBackground": "#580D3B",
         "statusBar.noFolderForeground": "#FFFCFD"
-    }
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

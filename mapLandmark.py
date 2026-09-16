@@ -4,13 +4,7 @@ import cv2
 import numpy as np
 import picamera2
 
-MARKER_SIZES = {
-    6: 0.145,
-    9: 0.145,
-    10: 0.067,
-}
 DEFAULT_SIZE = 0.145
-
 SCALE = 150
 K = np.array([[1315, 0, 820], [0, 1315, 616], [0, 0, 1]], dtype=np.float64)
 DIST = np.zeros(5)
@@ -38,12 +32,11 @@ cv2.circle(world_map, (400, 750), 12, (0, 0, 255), -1)
 
 for i in range(len(ids)):
     marker_id = int(ids[i][0])
-    size = MARKER_SIZES.get(marker_id, DEFAULT_SIZE)
 
-    _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], size, K, DIST)
+    _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
     x, y, z = tvec[0][0]
     distance = np.sqrt(x**2 + y**2 + z**2)
-    print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {size} m)")
+    print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {DEFAULT_SIZE} m)")
 
     px = int(400 + x * SCALE)
     py = int(750 - z * SCALE)
