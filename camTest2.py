@@ -7,7 +7,7 @@ MARKER_LENGTH = 0.145   # schwarzes Quadrat in Metern
 FX = 1800               # Brennweite in Pixeln
 
 cam = picamera2.Picamera2()
-cam.configure(cam.create_video_configuration({"size": (1640, 1232), "format": "RGB888"}))
+cam.configure(cam.create_video_configuration({"size": (1400, 900), "format": "RGB888"}))
 cam.start()
 time.sleep(1)
 bild = cam.capture_array()
