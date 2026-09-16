@@ -25,7 +25,8 @@ def drive(left, right, seconds):
 
 while True:
     distance = arlo.read_front_ping_sensor()
-    
+    if 0 < distance < STOP_MM:
+        break
 
     corners, ids, _ = cv2.aruco.detectMarkers(cam.capture_array(), aruco_dict)
 
