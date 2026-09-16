@@ -20,7 +20,7 @@ def drive(left, right, seconds):
     arlo.go_diff(POWER, POWER, left, right)
     time.sleep(seconds)
     arlo.stop()
-    #time.sleep(0.5)
+    time.sleep(0.5)
 
 
 while True:
