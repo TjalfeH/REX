@@ -93,10 +93,10 @@ for i in range(1000):
             nodes.append(Goal)
             print("Goal reached!")
             break
-    if nodes[-1] != Goal:
-        print("No path found")
-        cv2.imwrite("map.png", world_map)
-        exit()
+if nodes[-1] != Goal:   
+    print("No path found")
+    cv2.imwrite("map.png", world_map)
+    exit()
 
 path = []
 i = len(nodes) - 1
