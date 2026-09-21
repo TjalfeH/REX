@@ -64,13 +64,16 @@ class GridOccupancyMap(object):
             #note the x-y axes difference between imshow and plot
             plt.imshow(self.grid.T, cmap="Greys", origin='lower', vmin=0, vmax=1, extent=self.extent, interpolation='none')
 
-    for i in range(len(ids)):
-        marker_id = int(ids[i][0])
+map = GridOccupancyMap()
+for i in range(len(ids)):
+    marker_id = int(ids[i][0])
 
-        _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
-        x, y, z = tvec[0][0]
-        populate(marker_id, x, y, z)
-        distance = np.sqrt(x**2 + y**2 + z**2)
-        print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {DEFAULT_SIZE} m)")
+    _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
+    x, y, z = tvec[0][0]
+    map.populate(marker_id, x, y, z)
+    distance = np.sqrt(x**2 + y**2 + z**2)
+    print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {DEFAULT_SIZE} m)")
 
-   
+plt.clf()
+map.draw_map()
+plt.show()
