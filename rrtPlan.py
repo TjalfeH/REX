@@ -67,7 +67,7 @@ STEP = 0.2
 
 
 
-for i in range(5):
+for i in range(1000):
     
 
     rx = np.random.uniform(-2, 2)
@@ -86,8 +86,26 @@ for i in range(5):
         nodes.append(new_node)
         parents.append(nearest)
         if np.sqrt((new_node[0]-Goal[0])**2 + (new_node[1]-Goal[1])**2) < STEP:
+            parents.append(len(nodes)-1)
+            nodes.append(Goal)
             print("Goal reached!")
             break
 
+path = []
+i = len(nodes) - 1
+while i is not None:
+    path.append(nodes[i])
+    i = parents[i]
+path.reverse()  
+
+for k in range(len(path) - 1):
+    (x1, y1) = path[k]
+    (x2, y2) = path[k + 1]
+    px1 = int(400 + x1 * SCALE)
+    py1 = int(750 - y1 * SCALE)
+    px2 = int(400 + x2 * SCALE)
+    py2 = int(750 - y2 * SCALE)
+    cv2.line(world_map, (px1, py1), (px2, py2), (0, 0, 255), 2)
+    cv2.circle(world_map, (px1, py1), 5, (0, 0, 255), -1)   
 
 cv2.imwrite("map.png", world_map)
