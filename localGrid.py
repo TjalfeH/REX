@@ -56,6 +56,4 @@ def in_collision(x, y):
             return True
     return False
 
-print(in_collision(0, 0))
-print(in_collision(x, z))
 cv2.imwrite("map.png", world_map)
