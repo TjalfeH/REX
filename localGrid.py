@@ -47,8 +47,7 @@ for i in range(len(ids)):
     py = int(750 - z * SCALE)
     cv2.circle(world_map, (px, py), int(Box_Radius * SCALE), (255, 0, 0), -1)
     cv2.putText(world_map, "ID " + str(marker_id), (px + 15, py + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-    cv2.circle(world_map, (px, py), int(Robot_Radius * SCALE), (0, 255, 0), 2)
-    cv2.circle(world_map, (px, py), int(Box_Radius * SCALE), (0, 0, 255), 2)
+    cv2.circle(world_map, (px, py), int((Box_Radius + Robot_Radius) * SCALE), (0, 255, 0), 2)
 
 def in_collision(x, y):
     for (lx, lz) in landmark:
@@ -57,4 +56,6 @@ def in_collision(x, y):
             return True
     return False
 
+print(in_collision(0, 0))
+print(in_collision(x, z))
 cv2.imwrite("map.png", world_map)
