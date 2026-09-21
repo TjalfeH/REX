@@ -64,7 +64,7 @@ nodes = [(0,0)]
 parents = [None]
 Goal = (0, 3.5)
 STEP = 0.2
-
+cv2.circle(world_map, (int(400 + Goal[0] * SCALE), int(750 - Goal[1] * SCALE)), 12, (0, 255, 255), -1)
 
 
 for i in range(1000):
