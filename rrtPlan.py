@@ -93,6 +93,10 @@ for i in range(1000):
             nodes.append(Goal)
             print("Goal reached!")
             break
+    if nodes[-1] != Goal:
+        print("No path found")
+        cv2.imwrite("map.png", world_map)
+        exit()
 
 path = []
 i = len(nodes) - 1
@@ -131,7 +135,10 @@ for k in range(len(path) - 1):
 
     length = np.sqrt(dx**2 + dy**2)
     commands.append((turn, length))
-    print(f"drehen {turn:.1f} Grad, fahren {length:.2f} m")
+    print(f"turn {turn:.1f} Degree, drive {length:.2f} m")
+
+M_PER_SEC = 0.0      
+DEG_PER_SEC = 0.0    
 
 def drive(left, right, seconds):
     arlo.go_diff(SPEED, SPEED, left, right)
@@ -139,4 +146,11 @@ def drive(left, right, seconds):
     arlo.stop()
     time.sleep(0.5)
 
-cv2.imwrite("map.png", world_map)
+cv2.imwrite("map.png", world_map)for (turn, length) in commands:
+    if turn > 0:
+        drive(0, 1, turn / DEG_PER_SEC)
+    elif turn < 0:
+        drive(1, 0, -turn / DEG_PER_SEC)
+    drive(1, 1, length / M_PER_SEC)
+
+arlo.stop()
