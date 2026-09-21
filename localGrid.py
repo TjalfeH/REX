@@ -23,12 +23,16 @@ if ids is None:
     exit()
 
 world_map = np.full((800, 800, 3), 255, np.uint8)
-cv2.line(world_map, (400, 0), (400, 800), (200, 200, 200))
 for meter in range(1, 5):
     y_pixel = 750 - meter * SCALE
     cv2.line(world_map, (0, y_pixel), (800, y_pixel), (200, 200, 200))
     cv2.putText(world_map, str(meter) + " m", (5, y_pixel - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0))
 cv2.circle(world_map, (400, 750), 12, (0, 0, 255), -1)
+
+for meter in range(-2, 3):
+    x_pixel = 400 + meter * SCALE
+    cv2.line(world_map, (x_pixel, 0), (x_pixel, 800), (200, 200, 200))
+    cv2.putText(world_map, str(meter) + " m", (x_pixel + 5, 790), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0))
 
 landmark = []
 Box_Radius = 0.07
