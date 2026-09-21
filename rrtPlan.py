@@ -146,7 +146,8 @@ def drive(left, right, seconds):
     arlo.stop()
     time.sleep(0.5)
 
-cv2.imwrite("map.png", world_map)for (turn, length) in commands:
+cv2.imwrite("map.png", world_map)
+for (turn, length) in commands:
     if turn > 0:
         drive(0, 1, turn / DEG_PER_SEC)
     elif turn < 0:
