@@ -67,7 +67,7 @@ def in_collision(x, y):
 nodes = [(0,0)]
 parents = [None]
 Goal = (0, 3.5)
-STEP = 0.5
+STEP = 0.9
 
 
 for i in range(1000):
