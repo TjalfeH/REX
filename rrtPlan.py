@@ -3,11 +3,15 @@ import time
 import cv2
 import numpy as np
 import picamera2
+import robot
 
+SPEED = 64
 DEFAULT_SIZE = 0.145
 SCALE = 150
 K = np.array([[1315, 0, 820], [0, 1315, 616], [0, 0, 1]], dtype=np.float64)
 DIST = np.zeros(5)
+arlo = robot.Robot()
+
 
 cam = picamera2.Picamera2()
 cam.configure(cam.create_video_configuration({"size": (1640, 1232), "format": "RGB888"}, queue=False))
@@ -63,8 +67,7 @@ def in_collision(x, y):
 nodes = [(0,0)]
 parents = [None]
 Goal = (0, 3.5)
-STEP = 0.2
-cv2.circle(world_map, (int(400 + Goal[0] * SCALE), int(750 - Goal[1] * SCALE)), 12, (0, 255, 255), -1)
+STEP = 0.5
 
 
 for i in range(1000):
@@ -107,5 +110,33 @@ for k in range(len(path) - 1):
     py2 = int(750 - y2 * SCALE)
     cv2.line(world_map, (px1, py1), (px2, py2), (0, 0, 255), 2)
     cv2.circle(world_map, (px1, py1), 5, (0, 0, 255), -1)   
+
+
+heading = 90
+commands = []
+
+for k in range(len(path) - 1):
+    (x1, y1) = path[k]
+    (x2, y2) = path[k + 1]
+    dx = x2 - x1
+    dy = y2 - y1
+
+    target = np.degrees(np.arctan2(dy, dx))
+    turn = target - heading
+    if turn > 180:
+        turn -= 360
+    if turn < -180:
+        turn += 360
+    heading = target
+
+    length = np.sqrt(dx**2 + dy**2)
+    commands.append((turn, length))
+    print(f"drehen {turn:.1f} Grad, fahren {length:.2f} m")
+
+def drive(left, right, seconds):
+    arlo.go_diff(SPEED, SPEED, left, right)
+    time.sleep(seconds)
+    arlo.stop()
+    time.sleep(0.5)
 
 cv2.imwrite("map.png", world_map)
