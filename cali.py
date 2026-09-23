@@ -1,9 +1,10 @@
+```python
 import time
 
 import robot
 
 SPEED = 64
-SECONDS = 2
+SECONDS = 1.0
 
 arlo = robot.Robot()
 
@@ -15,13 +16,13 @@ def drive(left, right, seconds):
     time.sleep(0.5)
 
 
-input("Test 1: geradeaus. Enter druecken zum Starten...")
+input("Test 1: straight ahead. Press Enter to start...")
 drive(1, 1, SECONDS)
-meters = float(input("Wie viele Meter ist er gefahren? "))
+meters = float(input("How many meters did it drive? "))
 
-input("Test 2: rechts drehen. Enter druecken zum Starten...")
+input("Test 2: turn right. Press Enter to start...")
 drive(1, 0, SECONDS)
-degrees = float(input("Wie viele Grad hat er sich gedreht? "))
+degrees = float(input("How many degrees did it turn? "))
 
 arlo.stop()
 print(f"M_PER_SEC = {meters / SECONDS:.3f}")
