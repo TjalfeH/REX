@@ -47,6 +47,7 @@ for i in range(len(ids)):
 
     _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
     x, y, z = tvec[0][0]
+    x, z = np.array([x, z]) * (1 + Box_Radius / np.hypot(x, z))
     landmark.append((x, z))
     distance = np.sqrt(x**2 + y**2 + z**2)
     print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {DEFAULT_SIZE} m)")
@@ -58,11 +59,7 @@ for i in range(len(ids)):
     cv2.circle(world_map, (px, py), int((Box_Radius + Robot_Radius) * SCALE), (0, 255, 0), 2)
 
 def in_collision(x, y):
-    for (lx, lz) in landmark:
-        distance = np.sqrt((x-lx)**2 + (y-lz)**2)
-        if distance <= Box_Radius + Robot_Radius:
-            return True
-    return False
+    return any(np.hypot(x - lx, y - lz) <= Box_Radius + Robot_Radius for lx, lz in landmark)
 
 def segment_free(p, q):
     n = int(np.hypot(q[0] - p[0], q[1] - p[1]) / 0.05) + 1
@@ -82,25 +79,16 @@ if in_collision(*Goal):
     exit()
 
 for i in range(1000):
-    
-
-    rx = np.random.uniform(-2, 2)
-    ry = np.random.uniform(0, 4)
-
-    dists = []
-    for (nx, ny) in nodes:
-        dists.append(np.sqrt((nx-rx)**2 + (ny-ry)**2))
-    nearest = dists.index(min(dists))
+    rx, ry = Goal if np.random.rand() < 0.1 else (np.random.uniform(-2, 2), np.random.uniform(0, 4))
+    dists = [np.hypot(nx - rx, ny - ry) for nx, ny in nodes]
+    nearest = int(np.argmin(dists))
     nx, ny = nodes[nearest]
-    dx = rx - nx
-    dy = ry - ny
-    dx, dy = (dx / dists[nearest])*STEP, (dy / dists[nearest])*STEP
-    new_node = (nx + dx, ny + dy)
+    new_node = (nx + (rx - nx) / dists[nearest] * STEP, ny + (ry - ny) / dists[nearest] * STEP)
     if segment_free(nodes[nearest], new_node):
         nodes.append(new_node)
         parents.append(nearest)
-        if np.sqrt((new_node[0]-Goal[0])**2 + (new_node[1]-Goal[1])**2) < STEP and segment_free(new_node, Goal):
-            parents.append(len(nodes)-1)
+        if np.hypot(new_node[0] - Goal[0], new_node[1] - Goal[1]) < STEP and segment_free(new_node, Goal):
+            parents.append(len(nodes) - 1)
             nodes.append(Goal)
             print("Goal reached!")
             break
@@ -128,35 +116,18 @@ while i is not None:
 path.reverse()  
 path = shortcut(path)
 
-for k in range(len(path) - 1):
-    (x1, y1) = path[k]
-    (x2, y2) = path[k + 1]
-    px1 = int(400 + x1 * SCALE)
-    py1 = int(750 - y1 * SCALE)
-    px2 = int(400 + x2 * SCALE)
-    py2 = int(750 - y2 * SCALE)
-    cv2.line(world_map, (px1, py1), (px2, py2), (0, 0, 255), 2)
-    cv2.circle(world_map, (px1, py1), 5, (0, 0, 255), -1)   
-
+def px(p):
+    return int(400 + p[0] * SCALE), int(750 - p[1] * SCALE)
 
 heading = 90
 commands = []
-
-for k in range(len(path) - 1):
-    (x1, y1) = path[k]
-    (x2, y2) = path[k + 1]
-    dx = x2 - x1
-    dy = y2 - y1
-
-    target = np.degrees(np.arctan2(dy, dx))
-    turn = target - heading
-    if turn > 180:
-        turn -= 360
-    if turn < -180:
-        turn += 360
+for p, q in zip(path, path[1:]):
+    cv2.line(world_map, px(p), px(q), (0, 0, 255), 2)
+    cv2.circle(world_map, px(p), 5, (0, 0, 255), -1)
+    target = np.degrees(np.arctan2(q[1] - p[1], q[0] - p[0]))
+    turn = (target - heading + 180) % 360 - 180
     heading = target
-
-    length = np.sqrt(dx**2 + dy**2)
+    length = np.hypot(q[0] - p[0], q[1] - p[1])
     commands.append((turn, length))
     print(f"turn {turn:.1f} Degree, drive {length:.2f} m")
 
