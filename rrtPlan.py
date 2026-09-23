@@ -39,8 +39,10 @@ for meter in range(-2, 3):
     cv2.putText(world_map, str(meter) + " m", (x_pixel + 5, 790), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0))
 
 landmark = []
-Box_Radius = 0.18
+Box_Radius = 0.175
+Box_Shift = 0.12
 Robot_Radius = 0.28
+CAM_OFFSET = 0.21
 
 for i in range(len(ids)):
     marker_id = int(ids[i][0])  
@@ -49,7 +51,8 @@ for i in range(len(ids)):
     x, y, z = tvec[0][0]
     R, _ = cv2.Rodrigues(rvec[0][0])
     normal = R[[0, 2], 2]
-    x, z = np.array([x, z]) - Box_Radius * normal / np.linalg.norm(normal)
+    x, z = np.array([x, z]) - Box_Shift * normal / np.linalg.norm(normal)
+    z += CAM_OFFSET
     landmark.append((x, z))
     distance = np.sqrt(x**2 + y**2 + z**2)
     print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {DEFAULT_SIZE} m)")
