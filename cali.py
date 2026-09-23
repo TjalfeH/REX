@@ -1,5 +1,4 @@
 import time
-
 import robot
 
 SPEED = 64
