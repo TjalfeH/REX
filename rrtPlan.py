@@ -148,6 +148,7 @@ def drive(left, right, seconds):
 
 cv2.imwrite("map.png", world_map)
 for (turn, length) in commands:
+    time.sleep(1)
     if turn > 0:
         drive(0, 1, turn / DEG_PER_SEC)
     elif turn < 0:
