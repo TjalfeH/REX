@@ -39,11 +39,11 @@ for meter in range(-2, 3):
     cv2.putText(world_map, str(meter) + " m", (x_pixel + 5, 790), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0))
 
 landmark = []
-Box_Radius = 0.07
-Robot_Radius = 0.1
+Box_Radius = 0.1
+Robot_Radius = 0.2
 
 for i in range(len(ids)):
-    marker_id = int(ids[i][0])
+    marker_id = int(ids[i][0])  
 
     _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
     x, y, z = tvec[0][0]
@@ -64,11 +64,22 @@ def in_collision(x, y):
             return True
     return False
 
+def segment_free(p, q):
+    n = int(np.hypot(q[0] - p[0], q[1] - p[1]) / 0.05) + 1
+    for t in np.linspace(0, 1, n + 1):
+        if in_collision(p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])):
+            return False
+    return True
+
+
+
 nodes = [(0,0)]
 parents = [None]
 Goal = (0, 3.5)
 STEP = 0.5
-
+if in_collision(*Goal):
+    print("Goal is inside an obstacle")
+    exit()
 
 for i in range(1000):
     
@@ -85,10 +96,10 @@ for i in range(1000):
     dy = ry - ny
     dx, dy = (dx / dists[nearest])*STEP, (dy / dists[nearest])*STEP
     new_node = (nx + dx, ny + dy)
-    if not in_collision(new_node[0], new_node[1]):
+    if segment_free(nodes[nearest], new_node):
         nodes.append(new_node)
         parents.append(nearest)
-        if np.sqrt((new_node[0]-Goal[0])**2 + (new_node[1]-Goal[1])**2) < STEP:
+        if np.sqrt((new_node[0]-Goal[0])**2 + (new_node[1]-Goal[1])**2) < STEP and segment_free(new_node, Goal):
             parents.append(len(nodes)-1)
             nodes.append(Goal)
             print("Goal reached!")
@@ -97,6 +108,17 @@ if nodes[-1] != Goal:
     print("No path found")
     cv2.imwrite("map.png", world_map)
     exit()
+    
+def shortcut(path):
+    smooth = [path[0]]
+    i = 0
+    while i < len(path) - 1:
+        j = len(path) - 1
+        while j > i + 1 and not segment_free(path[i], path[j]):
+            j -= 1
+        smooth.append(path[j])
+        i = j
+    return smooth
 
 path = []
 i = len(nodes) - 1
@@ -104,6 +126,7 @@ while i is not None:
     path.append(nodes[i])
     i = parents[i]
 path.reverse()  
+path = shortcut(path)
 
 for k in range(len(path) - 1):
     (x1, y1) = path[k]
@@ -138,10 +161,14 @@ for k in range(len(path) - 1):
     print(f"turn {turn:.1f} Degree, drive {length:.2f} m")
 
 M_PER_SEC = 0.460
-DEG_PER_SEC = 127.0
+DEG_PER_SEC_LEFT = 125.0
+DEG_PER_SEC_RIGHT = 125.0
 
 def drive(left, right, seconds):
-    arlo.go_diff(SPEED, SPEED, left, right)
+    if left == right:
+        arlo.go_diff(SPEED, SPEED + 2, left, right)
+    else:
+        arlo.go_diff(SPEED, SPEED, left, right)
     time.sleep(seconds)
     arlo.stop()
     time.sleep(0.5)
@@ -150,9 +177,9 @@ cv2.imwrite("map.png", world_map)
 for (turn, length) in commands:
     time.sleep(1)
     if turn > 0:
-        drive(0, 1, turn / DEG_PER_SEC)
+        drive(0, 1, turn / DEG_PER_SEC_LEFT)
     elif turn < 0:
-        drive(1, 0, -turn / DEG_PER_SEC)
+        drive(1, 0, -turn / DEG_PER_SEC_RIGHT)
     drive(1, 1, length / M_PER_SEC)
 
 arlo.stop()
