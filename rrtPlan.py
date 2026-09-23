@@ -45,9 +45,11 @@ Robot_Radius = 0.28
 for i in range(len(ids)):
     marker_id = int(ids[i][0])  
 
-    _, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
+    rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(corners[i:i + 1], DEFAULT_SIZE, K, DIST)
     x, y, z = tvec[0][0]
-    x, z = np.array([x, z]) * (1 + Box_Radius / np.hypot(x, z))
+    R, _ = cv2.Rodrigues(rvec[0][0])
+    normal = R[[0, 2], 2]
+    x, z = np.array([x, z]) - Box_Radius * normal / np.linalg.norm(normal)
     landmark.append((x, z))
     distance = np.sqrt(x**2 + y**2 + z**2)
     print(f"ID {marker_id}: distance {distance:.3f} m  (x = {x:.3f}, z = {z:.3f}, size {DEFAULT_SIZE} m)")
