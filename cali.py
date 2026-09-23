@@ -21,9 +21,14 @@ input("Test 1: drive straight for 1 second. Press Enter...")
 drive(SPEED_L, SPEED_R, 1, 1, SECONDS)
 meters = float(input("How many meters did it drive? "))
 
-input("Test 2: turn for 1 second. Press Enter...")
+input("Test 2: turn left for 1 second. Press Enter...")
 drive(TURN_SPEED, TURN_SPEED, 0, 1, SECONDS)
-degrees = float(input("How many degrees did it turn? "))
+left_degrees = float(input("How many degrees did it turn? "))
+
+input("Test 3: turn right for 1 second. Press Enter...")
+drive(TURN_SPEED, TURN_SPEED, 1, 0, SECONDS)
+right_degrees = float(input("How many degrees did it turn? "))
 
 print(f"M_PER_SEC = {meters / SECONDS:.3f}")
-print(f"DEG_PER_SEC = {degrees / SECONDS:.1f}")
+print(f"DEG_PER_SEC_LEFT = {left_degrees / SECONDS:.1f}")
+print(f"DEG_PER_SEC_RIGHT = {right_degrees / SECONDS:.1f}")

@@ -137,8 +137,8 @@ for k in range(len(path) - 1):
     commands.append((turn, length))
     print(f"turn {turn:.1f} Degree, drive {length:.2f} m")
 
-M_PER_SEC = 0.430
-DEG_PER_SEC = 120.0
+M_PER_SEC = 0.460
+DEG_PER_SEC = 127.0
 
 def drive(left, right, seconds):
     arlo.go_diff(SPEED, SPEED, left, right)
