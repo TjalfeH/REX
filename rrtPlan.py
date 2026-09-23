@@ -39,8 +39,8 @@ for meter in range(-2, 3):
     cv2.putText(world_map, str(meter) + " m", (x_pixel + 5, 790), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0))
 
 landmark = []
-Box_Radius = 0.2
-Robot_Radius = 0.3
+Box_Radius = 0.18
+Robot_Radius = 0.28
 
 for i in range(len(ids)):
     marker_id = int(ids[i][0])  
