@@ -1,7 +1,6 @@
 import cv2
 import particle
 import camera
-import robot
 import numpy as np
 import time
 from timeit import default_timer as timer
@@ -23,7 +22,6 @@ def isRunningOnArlo():
 
 
 if isRunningOnArlo():
-    # XXX: You need to change this path to point to where your robot.py file is located
     sys.path.append("../../../../Arlo/python")
 
 
@@ -141,6 +139,19 @@ def initialize_particles(num_particles):
 
     return particles
 
+def move_all_particles(particles, distance, delta_theta, sigma, sigma_theta):
+    for p in particles:
+        particle.move_particle(p, distance, delta_theta)
+    particle.add_uncertainty(particles, sigma, sigma_theta)
+
+def expected_measurement(p, lx, ly):
+    dx = lx - p.getX()                             
+    dy = ly - p.getY()
+    dist = np.hypot(dx, dy)                        
+    direction = np.arctan2(dy, dx)                 
+    angle = direction - p.getTheta()               
+    angle = np.mod(angle + np.pi, 2*np.pi) - np.pi 
+    return dist, angle
 
 # Main program #
 try:
@@ -166,7 +177,8 @@ try:
     angular_velocity = 0.0 # radians/sec
 
 
-    arlo = robot.Robot()
+    if isRunningOnArlo():
+        arlo = robot.Robot()
      
     # Allocate space for world map
     world = np.zeros((500,500,3), dtype=np.uint8)
@@ -181,7 +193,8 @@ try:
     else:
         cam = camera.Camera(0, robottype='macbookpro', useCaptureThread=True)
         #cam = camera.Camera(1, robottype='macbookpro', useCaptureThread=False)
-
+    
+    last_time = timer()
     while True:
 
         # Move the robot according to user input (only for testing)
@@ -206,9 +219,17 @@ try:
 
         
         # Use motor controls to update particles
-        # XXX: Make the robot drive
-        # XXX: You do this
-
+        if isRunningOnArlo():
+            step = np.radians(30)
+            turn_robot(step)
+            move_all_particles(particles, 0.0, step, 2.0, np.radians(5))
+        else:
+            now = timer()
+            dt = now - last_time
+            last_time = now
+            if velocity != 0.0 or angular_velocity != 0.0:
+                move_all_particles(particles, velocity * dt, angular_velocity * dt,
+                                   1.0, np.radians(1))
 
         # Fetch next frame
         colour = cam.get_next_frame()
