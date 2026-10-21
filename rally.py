@@ -2,13 +2,13 @@
 rally.py - DIKU RoboRally 2026 (REX exam assignment 6), short version.
 
 Strategy (KISS):
-  - Particle filter from Exercise 5 with the 4 known landmarks (IDs 1..4).
+  - Particle filter from Exercise 5 with the 4 known corner landmarks.
   - Visit L1 -> L2 -> L3 -> L4 -> L1. "Visited" = within 40 cm of the box side,
     so we stop at 30 cm and never touch the box (3 min penalty).
   - Drive in short steps; when the target landmark is in view, drive on the
     camera measurement directly. Keep away from the other landmarks
-    (wrong order = 14 min penalty) and avoid obstacles (IDs > 4) with the
-    camera and the front sonar.
+    (wrong order = 14 min penalty) and avoid obstacles (any other ID) with
+    the camera and the front sonar.
 """
 import time
 import numpy as np
@@ -19,9 +19,12 @@ BOX_HALF = 20.0                         # half box side [cm]
 # 300 x 400 cm are measured between the INNER box sides -> add one full box width
 # to get centre-to-centre distances (the filter works with box centres).
 INNER_W, INNER_H = 300.0, 400.0
-LANDMARKS = {1: (0.0, 0.0), 2: (0.0, INNER_W + 2 * BOX_HALF),
-             3: (INNER_H + 2 * BOX_HALF, INNER_W + 2 * BOX_HALF), 4: (INNER_H + 2 * BOX_HALF, 0.0)}
-ROUTE = [1, 2, 3, 4, 1]                 # required order
+# ArUco ID of each corner landmark as set up on our track (L1..L4).
+L1, L2, L3, L4 = 1, 10, 5, 3
+LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, INNER_W + 2 * BOX_HALF),
+             L3: (INNER_H + 2 * BOX_HALF, INNER_W + 2 * BOX_HALF), L4: (INNER_H + 2 * BOX_HALF, 0.0)}
+ROUTE = [L1, L2, L3, L4, L1]            # required order
+NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 VISIT_DIST = 30.0                       # stop distance to box side (< 40 cm rule)
 KEEP_AWAY = 85.0                        # min distance to a non-target landmark centre
 STEP = 50.0                             # driving step when target not in view [cm]
@@ -127,7 +130,7 @@ def sense():
             for i, v in raw.items()}
     lms = {i: m for i, m in seen.items() if i in LANDMARKS}
     filter_update(lms)
-    return lms, {i: m for i, m in seen.items() if i > 4}
+    return lms, {i: m for i, m in seen.items() if i not in LANDMARKS}   # everything else = obstacle
 
 
 # ---- race -------------------------------------------------------------------
@@ -135,7 +138,7 @@ def approach(target, lms):
     """Target is in view: turn to it and drive until VISIT_DIST. Returns True once visited."""
     d, a = lms[target]
     if d <= VISIT_DIST:
-        print("L%d visited (%.0f cm)" % (target, d)); return True
+        print("%s visited (%.0f cm)" % (NAME[target], d)); return True
     turn(a)
     driven, aborted = drive(min(d - VISIT_DIST, 60.0), sonar_limit=200)
     if aborted and d - driven > VISIT_DIST + 20:   # stopped far from the box -> obstacle
@@ -181,31 +184,31 @@ def main():
     # then initialise the filter around L1 and scan once so L2/L4 fix our side.
     for _ in range(60):
         lms, _ = sense()
-        if 1 not in lms:
+        if L1 not in lms:
             turn(np.radians(30)); continue
-        if approach(1, lms):
+        if approach(L1, lms):
             break
-    init_particles_around(1, lms[1][0])
+    init_particles_around(L1, lms[L1][0])
     # At the start we may see ONLY L1. A ring of particles around L1 has no
     # useful mean, so we need a second landmark to fix which side we are on.
     # Scan 360 deg; if nothing else is visible, move sideways around L1 and scan again.
     for attempt in range(4):
         others = set()
         for _ in range(12):
-            lms, _ = sense(); others |= set(lms) - {1}; turn(np.radians(30))
+            lms, _ = sense(); others |= set(lms) - {L1}; turn(np.radians(30))
         xs = [p.getX() for p in particles]; ys = [p.getY() for p in particles]
         if others and np.std(xs) < 40 and np.std(ys) < 40:
             break                                   # particles collapsed to one place
         print("only L1 visible -> moving around it")
         lms, _ = sense()
-        if 1 in lms:
-            turn(lms[1][1] + np.radians(90))        # face L1, then turn 90 deg left
+        if L1 in lms:
+            turn(lms[L1][1] + np.radians(90))       # face L1, then turn 90 deg left
         drive(60.0)                                 # ~60 cm along the ring around L1
     for target in ROUTE[1:]:
         # If a leg fails the clock keeps running, so do not stop: a missed landmark
         # costs 14 min, but the following landmarks can still count.
         if not go_to(target):
-            print("could not reach L%d - continuing" % target)
+            print("could not reach %s - continuing" % NAME[target])
     print("done - all landmarks visited")
 
 
