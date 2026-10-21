@@ -1,7 +1,7 @@
 r"""
-rally.py - DIKU RoboRally 2026 (REX exam assignment 6), short version.
+rally.py - DIKU RoboRally 2026 (REX exam assignment 6).
 
-Track (Ex6 figure 1, seen from above, x to the right, y up):
+Track (seen from above, x to the right, y up):
 
     L2 ----------- 400 ----------- L4
      |  \                       /  |
@@ -9,167 +9,115 @@ Track (Ex6 figure 1, seen from above, x to the right, y up):
      |   /                     \   |
     L1 ----------------------------- L3
 
-  Route L1 -> L2 (up) -> L3 (diagonal) -> L4 (up) -> L1 (diagonal).
+Route L1 -> L2 -> L3 -> L4 -> L1.
 
-Strategy (KISS):
-  - Particle filter from Exercise 5 with the 4 known corner landmarks.
-    Measurements are predicted from the CAMERA position (21 cm in front of the axle).
-  - "Visited" = within 40 cm of the box side, so we stop at ~30 cm (front sonar)
-    and never touch the box (3 min penalty).
-  - When the target is in view, drive on the camera measurement directly - but only
-    if no obstacle is seen on the line to it (else the sonar would stop at the
-    obstacle and we would count it as the target).
-    Otherwise drive on the pose estimate, around the other landmarks
-    (wrong order = 14 min penalty) and around remembered obstacles (any ID that
-    is not a landmark; their world position is stored when we see them).
-  - After every visit we know how far we are from that box -> move all
-    particles there ("snap"). If measurements fit no particle twice in a row, the
-    filter is lost -> re-seed the particles from that measurement ("sensor resetting").
+Idea - every round of a leg is: FACE the target, LOOK, then ONE action.
+  - Face: by the camera if we see the target, else by the particle-filter pose (Ex5).
+  - Look: 3 frames, update the particle filter with the 4 known corner landmarks.
+  - Act:  something in the way -> drive to a point beside it
+          target close          -> last stretch blind, stop ~30 cm before the box (< 40 cm rule)
+          otherwise             -> one step towards the target
+  We look where we are about to drive. Obstacles we saw earlier are remembered, because
+  closer than ~90 cm the camera cannot see them any more. The front sonar is the last safety net.
+  After a visit the sonar tells us how far we are from the box -> all particles go there.
+  If no particle fits the measurements, the filter is lost -> new particles on a ring
+  around the closest landmark ("sensor resetting").
 
-Race-day checklist:
-  1. Landmark IDs: race day uses 1, 2, 3, 4 (obstacles have ID > 4)!
-  2. python3 rally.py calib -> 12 x 30 deg must be exactly ONE full turn and the
-     drive exactly 100 cm. If not, scale DEG_PER_SEC / CM_PER_SEC.
-     (There is no learned correction any more - this calibration is all we have.)
-  3. Measure ROBOT_FRONT.
-  4. Run with a log: python3 rally.py | tee run.log
+Race day:  python3 rally.py | tee run.log     (landmark IDs 1-4)
+Practice:  python3 rally.py practice          (IDs 5, 3, 6, 10)
+Calibrate: python3 rally.py calib             (12 x 30 deg = one full turn, then 100 cm)
 """
 import sys
 import time
 import numpy as np
 import particle, camera, robot
 
-# ---- constants (check on race day) -----------------------------------------
-BOX_HALF = 20.0                         # half landmark box side [cm]
-# 300 x 400 cm are measured between the INNER box sides -> add one full box width
-# to get centre-to-centre distances (the filter works with box centres).
-INNER_H, INNER_W = 300.0, 400.0         # L1-L2 (vertical) and L2-L4 (horizontal) [cm]
-L1, L2, L3, L4 = 5, 3, 6, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
-ROBOT_FRONT = 21.0                      # wheel-axle centre -> camera (CAM_OFFSET from our Ex4 rrtPlan.py)
-ROBOT_RADIUS = 28.0                     # robot footprint radius [cm] (Ex4)
-# Camera calibration from our Ex4 (rrtPlan.py). camera.py uses f=1687 and 15 cm markers,
-# which makes every distance 1.33x too long (matches the measured "drive ratio" 1.29-1.40).
-CAM_F, MARKER_SIZE = 1315.0, 0.145
-
-_W, _H = INNER_W + 2 * BOX_HALF, INNER_H + 2 * BOX_HALF
-LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, _H), L3: (_W, 0.0), L4: (_W, _H)}
-ROUTE = [L1, L2, L3, L4, L1]            # required order
+# ---- track ------------------------------------------------------------------
+BOX_HALF = 20.0                                 # half landmark box side [cm]
+W, H = 400 + 2 * BOX_HALF, 300 + 2 * BOX_HALF   # 400/300 are between the INNER sides -> centre to centre
+L1, L2, L3, L4 = (5, 3, 6, 10) if "practice" in sys.argv else (1, 2, 3, 4)
+LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, H), L3: (W, 0.0), L4: (W, H)}
+ROUTE = [L1, L2, L3, L4, L1]
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
-VISIT_DIST = 30.0                       # stop distance front -> box side (< 40 cm rule)
-BLIND_DIST = 130.0                      # below this the last stretch is driven without camera
-# The blind stretch ends at this camera -> marker distance. The bumper is ~7 cm in front of the
-# camera (ROBOT_RADIUS - ROBOT_FRONT), so head-on it is ~38 cm from the box and the sonar creeps
-# to VISIT_DIST. On a diagonal the box corner sticks out ~15 cm towards us (markers are on every
-# side): ~23 cm left -> no bump, and still visited (40 cm counts to the closest box side).
-BLIND_STOP = 45.0
-SEE_DIST = 160.0                        # from this gap on the camera should see the target
-KEEP_AWAY = 100.0                       # min distance of our path to a non-target landmark centre
-OBST_HALF = 12.0                        # marker face -> obstacle box centre [cm] (Box_Shift, Ex4)
-OBST_RADIUS = 17.5                      # obstacle box radius [cm] (Box_Radius, Ex4)
-OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0   # path -> obstacle centre; 30 cm for position errors
-STEP = 50.0                             # driving step when target not in view [cm]
-BACK_DIST = 50.0                        # back up at the start if L1 is not in the first image [cm]
-SONAR_STOP = 450                        # [mm] > 40 cm, so we never "visit" a wrong box by accident
+# ---- robot (check on race day) ------------------------------------------------
+CAM_FRONT = 21.0                    # wheel axle -> camera [cm] (CAM_OFFSET, Ex4)
+SONAR_FRONT = 28.0                  # wheel axle -> front sonar [cm]  MEASURE!
+CAM_F, MARKER_SIZE = 1315.0, 0.145  # our Ex4 calibration (camera.py's f=1687 makes distances 1.33x too long)
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
-N = 1000                                # particles
-SIGMA_A = np.radians(10.0)              # bearing noise (distance noise grows with distance)
 
-FULL_SCAN = [0] + [30] * 11             # turn steps [deg]: look all around
-AHEAD_SCAN = [0, 30, 30, -90, -30]      # look at 0, +30, +60, -30, -60 deg only (fast)
+# ---- strategy ---------------------------------------------------------------------
+VISIT_DIST = 30.0                   # stop distance front -> box side (rule: < 40 cm)
+BLIND_DIST = 130.0                  # closer than this the camera loses the marker -> drive blind
+BLIND_STOP = 45.0                   # blind stretch ends at this camera -> box distance
+SEE_DIST = 160.0                    # from here on the camera should see the target
+KEEP_OBS = 28.0 + 17.5 + 15        # path -> obstacle centre: robot radius + box radius + margin [cm]
+KEEP_LM = 100.0                     # path -> centre of a WRONG landmark (never get within 40 cm of it)
+STEP = 70.0                         # max drive between two looks [cm]
+SONAR_STOP = 450                    # [mm] > 40 cm, so we never "visit" a wrong box by accident
+N = 1000                            # particles
+SIGMA_A = np.radians(10.0)          # bearing noise
+FULL_SCAN = [30] * 11               # with the current view: all around
+AHEAD_SCAN = [30, 30, -90, -30]     # +30, +60, -30, -60 deg
 
 arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 cam.intrinsic_matrix = np.array([[CAM_F, 0, 820.0], [0, CAM_F, 616.0], [0, 0, 1]], dtype=np.float64)
 cam.arucoMarkerLength = MARKER_SIZE
 particles = []
-obstacles = {}                          # obstacle id -> (x, y) world position, remembered
-moved = True                            # moved since the last filter update? (else nothing new to learn)
-lost_count = 0                          # filter updates in a row where no particle fit
+obstacles = {}                      # id -> (x, y) world: obstacles seen earlier (camera is blind < ~90 cm)
+moved = True                        # moved since the last filter update? (else nothing new to learn)
 
 
 def wrap(a):
     return (a + np.pi) % (2 * np.pi) - np.pi
 
 
-def cam_pos(x, y, th):
-    """Camera position: ROBOT_FRONT in front of the wheel axle. Works on numbers and arrays."""
-    return x + ROBOT_FRONT * np.cos(th), y + ROBOT_FRONT * np.sin(th)
-
-
 # ---- motion -----------------------------------------------------------------
 def turn(angle):
-    """Turn in place [rad], positive = left. Also moves the particles."""
+    """Turn in place [rad], positive = left. Moves the particles too."""
     global moved
     deg = np.degrees(angle)
-    if abs(deg) < 2:                    # too small to turn -> particles must not turn either
+    if abs(deg) < 2:                # too small to turn -> particles must not turn either
         return
     moved = True
-    arlo.go_diff(SPEED, SPEED, 0, 1) if deg > 0 else arlo.go_diff(SPEED, SPEED, 1, 0)
+    arlo.go_diff(SPEED, SPEED, int(deg < 0), int(deg > 0))
     time.sleep(abs(deg) / DEG_PER_SEC)
     arlo.stop(); time.sleep(0.3)
     for p in particles:
         particle.move_particle(p, 0.0, angle)
-    # timed turns get worse the bigger they are
-    particle.add_uncertainty(particles, 2.0, np.radians(3) + 0.1 * abs(angle))
+    particle.add_uncertainty(particles, 2.0, np.radians(3) + 0.1 * abs(angle))  # big turns are worse
 
 
 def drive(dist, sonar_limit=SONAR_STOP):
-    """Drive forward [cm], abort if the front sonar sees something close. Returns (driven, aborted)."""
+    """Drive `dist` cm (negative = backwards). Stops if the sonar in driving direction
+    sees something closer than `sonar_limit` mm. Returns (driven, aborted)."""
     global moved
-    if dist <= 0:
+    if abs(dist) < 1:
         return 0.0, False
     moved = True
+    fwd = dist > 0
+    ping = arlo.read_front_ping_sensor if fwd else arlo.read_back_ping_sensor
+    arlo.go_diff(SPEED, SPEED + 2, int(fwd), int(fwd))
     t0, aborted = time.time(), False
-    arlo.go_diff(SPEED, SPEED + 2, 1, 1)
-    while time.time() - t0 < dist / CM_PER_SEC:
-        s = arlo.read_front_ping_sensor()
-        if 0 < s < sonar_limit:
+    while time.time() - t0 < abs(dist) / CM_PER_SEC:
+        if 0 < ping() < sonar_limit:
             aborted = True; break
         time.sleep(0.05)
-    elapsed = time.time() - t0          # measure BEFORE the settle pause
+    driven = np.sign(dist) * min(abs(dist), (time.time() - t0) * CM_PER_SEC)  # before the settle pause
     arlo.stop(); time.sleep(0.3)
-    driven = min(dist, elapsed * CM_PER_SEC)
     for p in particles:
         particle.move_particle(p, driven, 0.0)
-    particle.add_uncertainty(particles, 2.0 + 0.05 * driven, np.radians(3))
+    particle.add_uncertainty(particles, 2.0 + 0.05 * abs(driven), np.radians(3))
     return driven, aborted
 
 
-def avoid():
-    """Obstacle ahead: turn 60 deg towards the freer side and move a bit."""
-    l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
-    turn(np.radians(60) if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else np.radians(-60))
-    drive(35.0)
-
-
-def back_up(dist):
-    """Drive backwards up to `dist` cm - only as far as the back sonar says is free
-    (keeping 20 cm), and stop if something shows up behind us.
-    Only used at the start, before there are particles, so no particle update."""
-    s = arlo.read_back_ping_sensor()
-    if s > 0:                           # valid reading -> leave 20 cm to whatever is behind us
-        dist = min(dist, s / 10.0 - 20.0)
-    if dist < 10:
-        print("no room behind us (back sonar %d mm) -> not backing up" % s)
-        return
-    print("backing up %.0f cm (back sonar %d mm)" % (dist, s))
-    t0 = time.time()
-    arlo.go_diff(SPEED, SPEED, 0, 0)
-    while time.time() - t0 < dist / CM_PER_SEC:
-        b = arlo.read_back_ping_sensor()
-        if 0 < b < 200:                 # something closer than 20 cm behind us -> stop
-            break
-        time.sleep(0.05)
-    arlo.stop(); time.sleep(0.3)
-
-
-def step_to(point, dist):
-    """Turn towards a world point (x, y) and drive `dist` cm; evade if the sonar stops us."""
-    x, y, th = pose()
-    turn(wrap(np.arctan2(point[1] - y, point[0] - x) - th))
+def forward(dist):
+    """Drive forward; if the sonar stops us: turn 60 deg to the freer side and move on a bit."""
     if drive(dist)[1]:
-        avoid()
+        l, r = [s if s > 0 else 9999 for s in (arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor())]
+        turn(np.radians(60 if l >= r else -60))
+        drive(35.0)
 
 
 # ---- particle filter (Exercise 5, 4 landmarks) ------------------------------
@@ -183,47 +131,41 @@ def set_particles(xs, ys, ths):
     particles = [particle.Particle(x, y, t, 1.0 / len(xs)) for x, y, t in zip(xs, ys, ths)]
 
 
-def ring(lm_id, d, a, n=N):
-    """Particles that would see lm_id at distance d (camera -> box side) and bearing a."""
-    lx, ly = LANDMARKS[lm_id]
-    phi = np.random.uniform(-np.pi, np.pi, n)            # direction landmark -> camera
+def ring(lm, d, a, n=N):
+    """Particles that would see landmark `lm` at distance d (camera -> box side) and bearing a."""
+    lx, ly = LANDMARKS[lm]
+    phi = np.random.uniform(-np.pi, np.pi, n)               # direction landmark -> camera
     r = d + BOX_HALF + np.random.normal(0, 10, n)
-    cx, cy = lx + r * np.cos(phi), ly + r * np.sin(phi)  # camera on a ring around the box
     ths = wrap(phi + np.pi - a + np.random.normal(0, np.radians(5), n))
-    return cx - ROBOT_FRONT * np.cos(ths), cy - ROBOT_FRONT * np.sin(ths), ths   # axle behind camera
+    cx, cy = lx + r * np.cos(phi), ly + r * np.sin(phi)     # camera on a ring around the box
+    return cx - CAM_FRONT * np.cos(ths), cy - CAM_FRONT * np.sin(ths), ths   # axle behind the camera
 
 
-def filter_update(meas, check_lost=True):
-    """Gaussian likelihood + systematic resampling. Re-seeds if no particle fits twice in a row."""
-    global moved, lost_count
-    if not meas or not particles or not moved:
-        # No particles yet (start phase), or same spot and same view as the last update:
-        # resampling on the same information again would only make the filter overconfident.
+def log_likelihood(xs, ys, ths, meas):
+    """log p(measurements | particle). Predicted from the CAMERA, because the camera measures."""
+    cx, cy = xs + CAM_FRONT * np.cos(ths), ys + CAM_FRONT * np.sin(ths)
+    logw = np.zeros(len(xs))
+    for i, (d, a) in meas.items():
+        lx, ly = LANDMARKS[i]
+        ed = np.hypot(lx - cx, ly - cy) - BOX_HALF          # expected distance to the box side
+        ea = wrap(np.arctan2(ly - cy, lx - cx) - ths)       # expected bearing
+        sd = 10.0 + 0.08 * d                                # far markers are noisier
+        logw -= 0.5 * ((d - ed) / sd) ** 2 + 0.5 * (wrap(a - ea) / SIGMA_A) ** 2
+    return logw
+
+
+def filter_update(meas):
+    """Weight + systematic resampling. If even the best particle is ~4 sigma off -> re-seed."""
+    global moved
+    if not meas or not particles or not moved:      # same view as last time -> nothing new
         return
     xs, ys, ths = as_arrays()
-    cx, cy = cam_pos(xs, ys, ths)       # the camera measures, so predict from the camera
-    logw = np.zeros(len(xs))
-    for lm_id, (d, a) in meas.items():
-        lx, ly = LANDMARKS[lm_id]
-        ed = np.hypot(lx - cx, ly - cy) - BOX_HALF
-        ea = wrap(np.arctan2(ly - cy, lx - cx) - ths)
-        sd = 10.0 + 0.08 * d            # far markers are noisy (409 vs 362 cm for the same box)
-        logw += -0.5 * ((d - ed) / sd) ** 2 - 0.5 * (wrap(a - ea) / SIGMA_A) ** 2
-    if check_lost and logw.max() < -8.0 * len(meas):
-        # Even the best particle is ~4 sigma off. Once could be a bad frame -> ignore it.
-        # Twice in a row: the estimate is wrong, and resampling cannot fix that (it only
-        # picks among wrong particles) -> start over from this sighting.
-        lost_count += 1
-        if lost_count < 2:
-            print("measurement fits no particle -> ignored once")
-            return
-        lost_count = 0
-        lm_id = min(meas, key=lambda i: meas[i][0])     # closest = most accurate
-        print("LOST -> re-seeding particles around %s" % NAME[lm_id])
-        set_particles(*ring(lm_id, *meas[lm_id]))
-        filter_update(meas, check_lost=False)           # use the other landmarks on the new ring
-        return
-    lost_count = 0
+    logw = log_likelihood(xs, ys, ths, meas)
+    if logw.max() < -8.0 * len(meas):
+        lm = min(meas, key=lambda i: meas[i][0])    # closest landmark = most accurate
+        print("LOST -> new particles around", NAME[lm])
+        xs, ys, ths = ring(lm, *meas[lm])
+        logw = log_likelihood(xs, ys, ths, meas)    # other landmarks pick the right part of the ring
     w = np.exp(logw - logw.max()); w /= w.sum()
     cum = np.cumsum(w); cum[-1] = 1.0
     idx = np.searchsorted(cum, (np.random.uniform() + np.arange(len(w))) / len(w))
@@ -237,54 +179,33 @@ def pose():
 
 
 def localised():
-    """True if the particles agree on one pose. A ring around one landmark does not: its
-    positions can be close together (small ring) but its headings point everywhere."""
+    """True if the particles agree on one pose (a ring around one landmark does not:
+    its headings point everywhere)."""
     if not particles:
         return False
     xs, ys, ths = as_arrays()
-    heading_agree = np.hypot(np.mean(np.cos(ths)), np.mean(np.sin(ths)))   # 1 = all equal
-    return np.std(xs) < 50 and np.std(ys) < 50 and heading_agree > 0.9
+    return np.std(xs) < 50 and np.std(ys) < 50 and np.hypot(np.mean(np.cos(ths)), np.mean(np.sin(ths))) > 0.9
 
 
-def snap_to(lm_id):
-    """We stand in front of lm_id facing it: put every particle at the matching spot."""
+def snap_to(lm):
+    """We stand in front of `lm`, facing it: put every particle where the sonar says."""
     global moved
     s = arlo.read_front_ping_sensor()
     gap = s / 10.0 if 0 < s < 1500 else VISIT_DIST
-    if not particles:                   # very first visit: ring, scan decides the side
-        set_particles(*ring(lm_id, gap, 0.0))
+    if not particles:                               # first visit: ring, a later scan decides the side
+        set_particles(*ring(lm, gap + SONAR_FRONT - CAM_FRONT, 0.0))
     else:
-        xs, ys, ths = as_arrays()
-        ths = wrap(ths + np.random.normal(0, np.radians(3), len(ths)))
-        r = gap + BOX_HALF + ROBOT_FRONT
-        lx, ly = LANDMARKS[lm_id]
+        ths = wrap(as_arrays()[2] + np.random.normal(0, np.radians(3), len(particles)))
+        r = gap + BOX_HALF + SONAR_FRONT
+        lx, ly = LANDMARKS[lm]
         set_particles(lx - r * np.cos(ths), ly - r * np.sin(ths), ths)
-    moved = True                        # new particles -> the next sighting must be used
+    moved = True                                    # new particles -> the next sighting must be used
     return gap
 
 
-def remember(obs):
-    """Store the world position of every obstacle we see (only when we know where we are)."""
-    if not obs or not localised():
-        return
-    x, y, th = pose()
-    cx, cy = cam_pos(x, y, th)
-    for i, (d, a) in obs.items():
-        if d > 350:
-            continue                    # far sightings are too inaccurate to plan with
-        r = d + OBST_HALF
-        ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
-        if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
-            continue                    # outside the track square -> not a race obstacle
-        if i in obstacles:              # average with earlier sightings
-            ox, oy = 0.5 * (ox + obstacles[i][0]), 0.5 * (oy + obstacles[i][1])
-        else:
-            print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
-        obstacles[i] = (ox, oy)
-
-
+# ---- sensing ------------------------------------------------------------------
 def sense():
-    """Grab 3 frames, average per ID; update the filter. Returns (landmarks, obstacles) as {id: (dist, angle)}."""
+    """3 frames, averaged per ID; updates the filter. Returns {id: (dist, angle)} of all markers."""
     raw = {}
     for _ in range(3):
         ids, ds, angs = cam.detect_aruco_objects(cam.get_next_frame())
@@ -292,194 +213,146 @@ def sense():
             for i, d, a in zip(ids, ds, angs):
                 if 0 < d < 500:
                     raw.setdefault(int(i), []).append((float(d), float(a)))
-    seen = {i: (np.mean([d for d, _ in v]), np.arctan2(np.mean([np.sin(a) for _, a in v]),
-                                                         np.mean([np.cos(a) for _, a in v])))
-            for i, v in raw.items()}
+    seen = {i: tuple(np.mean(v, axis=0)) for i, v in raw.items()}   # angles are within +-35 deg
     print("seen:", {i: (round(d), round(np.degrees(a))) for i, (d, a) in seen.items()})
-    lms = {i: m for i, m in seen.items() if i in LANDMARKS}
-    obs = {i: m for i, m in seen.items() if i not in LANDMARKS}       # everything else = obstacle
-    filter_update(lms)
-    remember(obs)
-    return lms, obs
+    filter_update({i: m for i, m in seen.items() if i in LANDMARKS})
+    if localised():                                     # remember obstacles in world coordinates
+        x, y, th = pose()
+        cx, cy = x + CAM_FRONT * np.cos(th), y + CAM_FRONT * np.sin(th)
+        for i, (d, a) in seen.items():
+            if i not in LANDMARKS and d < 350:          # far sightings are too inaccurate
+                obstacles[i] = (cx + (d + 12) * np.cos(th + a), cy + (d + 12) * np.sin(th + a))
+    return seen
 
 
-def blocked(obs, d_t, a_t):
-    """True if a seen obstacle lies on the line to a point at distance d_t, bearing a_t.
-    Rotate the view so that point is straight ahead: d*cos = how far ahead, d*sin = how far to the side."""
-    return any(d * np.cos(a - a_t) < d_t and abs(d * np.sin(a - a_t)) < ROBOT_RADIUS + OBST_RADIUS
-               for d, a in obs.values())
+def scan(target, steps=FULL_SCAN):
+    """Turn by `steps` [deg] and look after each turn. Stops early if `target` shows up."""
+    seen = {}
+    for s in steps:
+        turn(np.radians(s))
+        seen = sense()
+        if target in seen:
+            break
+    return seen
+
+
+def where(target, seen):
+    """(angle to turn, camera -> box side distance after the turn). Camera if possible, else pose."""
+    if target in seen:
+        d, a = seen[target]
+        x, y = CAM_FRONT + (d + BOX_HALF) * np.cos(a), (d + BOX_HALF) * np.sin(a)  # box seen from the axle
+        return np.arctan2(y, x), np.hypot(x, y) - CAM_FRONT - BOX_HALF
+    px, py, th = pose()
+    gx, gy = LANDMARKS[target]
+    return wrap(np.arctan2(gy - py, gx - px) - th), np.hypot(gx - px, gy - py) - CAM_FRONT - BOX_HALF
+
+
+def things_ahead(seen, target, dist):
+    """Seen markers, remembered obstacles and the other landmarks (map) up to `dist` cm ahead,
+    as (ahead, side, keep) [cm] seen from the camera. ahead = d*cos(a), side = d*sin(a), left = +."""
+    things = [(d * np.cos(a), d * np.sin(a), KEEP_LM if i in LANDMARKS else KEEP_OBS)
+              for i, (d, a) in seen.items() if i != target]
+    if localised():                                     # known positions -> rotate into the robot frame
+        x, y, th = pose()
+        known = {i: (o, KEEP_OBS) for i, o in obstacles.items()}
+        known.update({i: (o, KEEP_LM) for i, o in LANDMARKS.items() if i != target})
+        for i, ((ox, oy), keep) in known.items():
+            if i not in seen:
+                dx, dy = ox - x - CAM_FRONT * np.cos(th), oy - y - CAM_FRONT * np.sin(th)
+                things.append((np.cos(th) * dx + np.sin(th) * dy, -np.sin(th) * dx + np.cos(th) * dy, keep))
+    return [t for t in things if 0 < t[0] < dist]
+
+
+def blocked(things):
+    return any(abs(side) < keep for _, side, keep in things)
 
 
 # ---- race -------------------------------------------------------------------
-def scan(target, steps=FULL_SCAN):
-    """Turn by `steps` [deg] and look after each turn (updates the filter).
-    Stops early, facing it, if `target` shows up."""
-    for s in steps:
-        turn(np.radians(s))
-        lms, _ = sense()
-        if target in lms:
-            return lms
-    return {}
+def go_around(things, target):
+    """Waypoint beside everything in the way: push it sideways past one box after the other
+    (so we never squeeze between two). Try the shorter side first and look before driving."""
+    first = min(a for a, side, keep in things if abs(side) < keep)
+    near = [t for t in things if t[0] < first + 100]    # boxes further on are the next round's job
+    x = first + CAM_FRONT                               # seen from the axle (we turn around it)
+    sides = []
+    for sign in (1, -1):                                # 1 = pass on the left, -1 = on the right
+        y = 0.0
+        for _, side, keep in sorted(near, key=lambda t: sign * t[1]):
+            if abs(side - y) < keep + 15:
+                y = side + sign * (keep + 15)
+        sides.append(y)
+    print("something in the way -> going around it (sideways %.0f or %.0f cm)" % tuple(sides))
+    heading = 0.0
+    for y in sorted(sides, key=abs):
+        turn(np.arctan2(y, x) - heading)
+        heading = np.arctan2(y, x)
+        dist = min(np.hypot(x, y), 2 * STEP)
+        if not blocked(things_ahead(sense(), target, dist)):
+            forward(dist)
+            return
+    drive(-40.0)                                        # both ways blocked -> back off
 
 
-def relocalise(target):
-    """Scan until the particles agree on one pose. Returns the landmarks if the target showed up."""
-    for _ in range(3):
-        lms = scan(target)
-        if target in lms or localised():
-            return lms
-        print("not localised yet -> move a bit and scan again")
-        turn(np.radians(120)); drive(60.0)
-    return {}
-
-
-def detour(x, y, gx, gy, target):
-    """First landmark/obstacle the straight line to the goal passes too closely -> waypoint beside it."""
-    things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
-    things += [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
-    dx, dy = gx - x, gy - y
-    length = max(np.hypot(dx, dy), 1e-9)
-    best = None
-    for j, (lx, ly, keep) in enumerate(things):
-        t = ((lx - x) * dx + (ly - y) * dy) / length ** 2
-        # behind us, beyond the goal, or we are already at the closest point (just left it) -> no problem
-        if t >= 1 or t * length < 40:
-            continue
-        cx, cy = x + t * dx, y + t * dy
-        off = np.hypot(cx - lx, cy - ly)
-        if off < keep and (best is None or t < best[0]):
-            nx, ny = (cx - lx, cy - ly) if off > 1 else (-dy, dx)   # push out on the side we already pass
-            n = np.hypot(nx, ny)
-            # If that waypoint lies in another box's zone, the gap between the two is too narrow:
-            # go around the other side instead (else we zigzag between the two boxes).
-            for side in (1, -1):
-                wx, wy = lx + side * (keep + 20) * nx / n, ly + side * (keep + 20) * ny / n
-                if all(np.hypot(wx - ox, wy - oy) >= k for i, (ox, oy, k) in enumerate(things) if i != j):
-                    break
-            best = (t, (wx, wy))
-    return None if best is None else best[1]
-
-
-def approach(target, lms):
-    """Target is in view (and nothing in the way): turn to it and drive until VISIT_DIST.
-    Returns True once visited."""
-    d, a = lms[target]
-    # d, a are seen from the camera, but we turn around the axle 21 cm behind it.
-    ax, ay = ROBOT_FRONT + d * np.cos(a), d * np.sin(a)    # marker as seen from the axle
-    turn(np.arctan2(ay, ax))
-    d = np.hypot(ax, ay) - ROBOT_FRONT                     # camera -> marker after the turn
-    if d <= BLIND_DIST:
-        # Final stretch: closer than ~90 cm the camera loses the marker, so drive
-        # without re-checking it, only to BLIND_STOP (see there). The front sonar misses
-        # boxes approached at an angle (sound reflects away), so we only creep closer
-        # if the sonar really sees the box (plausible reading, i.e. head-on).
-        remaining = max(d - BLIND_STOP, 0.0)
-        driven, aborted = drive(remaining, sonar_limit=330)
-        if aborted and remaining - driven > 15.0:      # sonar glitch far from the box -> try the rest once
-            drive(remaining - driven, sonar_limit=330)
+def final_approach(target, dist):
+    """Last stretch without camera, to BLIND_STOP. Then creep closer only if the sonar sees the
+    box (head-on). On a diagonal the box corner sticks out ~15 cm -> still < 40 cm, no bump."""
+    rest = max(dist - BLIND_STOP, 0.0)
+    driven, aborted = drive(rest, sonar_limit=330)
+    if aborted and rest - driven > 15:                       # sonar glitch far from the box -> once more
+        drive(rest - driven, sonar_limit=330)
+    gap = snap_to(target)
+    if 35 < gap < 80:
+        drive(gap - VISIT_DIST, sonar_limit=330)
         gap = snap_to(target)
-        if 35 < gap < 80:                              # sonar sees the box, still a bit far -> creep closer
-            drive(gap - VISIT_DIST, sonar_limit=330)
-            gap = snap_to(target)
-        print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
-        return True
-    # Further away: stop ~10 cm inside BLIND_DIST so the next sighting is guaranteed.
-    # The stop point is >= 120 cm from the target, so the normal sonar limit only reacts to obstacles.
-    if drive(min(d - BLIND_DIST + 10.0, 80.0))[1]:
-        avoid()
-    return False
+    print("%s visited (sonar %.0f cm)" % (NAME[target], gap))
 
 
 def go_to(target):
-    """One leg: reach `target` using the pose estimate until the camera sees it."""
-    gx, gy = LANDMARKS[target]
-    for _ in range(60):
-        lms, obs = sense()
-        if blocked(obs, 80.0, 0.0):             # obstacle box right in front of us -> evade first
-            avoid(); continue
-        if target not in lms and not localised():
-            relocalise(target)
-            continue                            # look again from where the scan stopped
-        if target in lms:
-            d_t, a_t = lms[target]
-            in_way = blocked(obs, d_t, a_t)     # obstacle between us and the target?
-            # Go around a seen or remembered obstacle via a waypoint, if we know where we are.
-            if localised() and (in_way or d_t > BLIND_DIST):
-                x, y, _ = pose()
-                wp = detour(x, y, gx, gy, target)
-                if wp is not None:
-                    print("target in view, but blocked -> detour via (%.0f, %.0f)" % wp)
-                    step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
-                    continue
-            if in_way:                          # never approach through it: the sonar would
-                print("obstacle in front of %s -> evade" % NAME[target])   # take it for the target
-                avoid(); continue
-            if approach(target, lms):
-                return True
-            continue
-        x, y, th = pose()
-        gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT     # our front -> target box side
-        print("pose x=%.0f y=%.0f th=%.0f deg | %s gap %.0f cm"
-              % (x, y, np.degrees(th), NAME[target], gap))
-        if gap < SEE_DIST:
-            # The camera should see it from here: face it, then look left and right.
-            turn(wrap(np.arctan2(gy - y, gx - x) - th))
-            if target in scan(target, AHEAD_SCAN):
+    """One leg. Every round: face the target, look, one action."""
+    for _ in range(80):
+        seen = sense()
+        if target not in seen and not localised():
+            seen = scan(target)                              # look around until we know where we are
+            if target not in seen and not localised():
+                print("still lost -> moving somewhere else")
+                turn(np.radians(120)); forward(60.0)
                 continue
-            # Not found but the other landmarks agree with the estimate (else LOST would have
-            # fired): probably hidden behind an obstacle -> creep closer towards the estimate.
-            print("%s not visible -> moving closer" % NAME[target])
-            if gap > BLIND_DIST:
-                step_to((gx, gy), min(STEP, gap - BLIND_DIST + 10))
-            else:
-                particle.add_uncertainty(particles, 80.0, np.radians(30))   # really lost -> relocalise
-            continue
-        wp = detour(x, y, gx, gy, target)
-        if wp is not None:
-            print("detour via (%.0f, %.0f)" % wp)
-            step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
+        ang, dist = where(target, seen)
+        if abs(ang) > np.radians(10):                        # not facing it -> turn, then look again
+            turn(ang); continue
+        turn(ang)                                            # small correction, view stays the same
+        things = things_ahead(seen, target, dist)
+        if blocked(things):
+            go_around(things, target)
+        elif target in seen and dist <= BLIND_DIST:
+            final_approach(target, dist)
+            return True
+        elif target in seen:
+            forward(min(dist - BLIND_DIST + 10, STEP))       # stop just inside BLIND_DIST
+        elif dist < BLIND_DIST:                              # too close for the camera to see it:
+            if drive(dist - BLIND_DIST - 20, sonar_limit=200)[1]:    # back off until it fits the image
+                final_approach(target, dist)                # (something behind us -> go on the pose)
+                return True
+        elif dist < SEE_DIST:                                # should be visible from here, but is not
+            if target not in scan(target, AHEAD_SCAN):
+                print(NAME[target], "not visible -> estimate is off, relocalise")
+                particle.add_uncertainty(particles, 80.0, np.radians(30))
         else:
-            step_to((gx, gy), min(STEP, gap - SEE_DIST + 20))       # stop where the camera can see it
+            forward(min(dist - SEE_DIST + 20, STEP))         # drive until the camera can see it
     return False
 
 
 def main():
-    print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
-    # Start: turn until L1 is in view, approach it on the camera (= first visit).
-    # The visit seeds the particles on a ring around L1 at the sonar distance.
-    # Placed too close to L1, the marker may not fit into the image (closer than ~90 cm
-    # the camera loses it) -> back up a bit first; the search below then sees it.
-    if L1 not in sense()[0]:
-        print("L1 not in the first image - maybe too close -> backing up")
-        back_up(BACK_DIST)
-    misses = 0
-    for _ in range(60):
-        lms, obs = sense()
-        if L1 not in lms:
-            misses += 1
-            if misses % 12 == 0:        # a full turn without L1 (hidden?) -> move, then look again
-                print("L1 not seen in a full turn -> moving a bit")
-                if drive(60.0)[1]:
-                    avoid()
-            else:
-                turn(np.radians(30))
-            continue
-        if blocked(obs, *lms[L1]):
-            avoid(); continue
-        if approach(L1, lms):
-            break
-    # A ring around L1 has no useful mean -> scan until a second landmark fixes our side.
-    relocalise(L2)
-    for target in ROUTE[1:]:
-        # If a leg fails the clock keeps running, so do not stop: a missed landmark
-        # costs 14 min, but the following landmarks can still count.
-        if not go_to(target):
+    if L1 not in sense():                                    # placed too close? marker does not fit
+        print("L1 not in the first image -> backing up a bit")
+        drive(-50.0, sonar_limit=200)
+    for target in ROUTE:
+        if not go_to(target):                                # clock keeps running -> just go on
             print("could not reach %s - continuing" % NAME[target])
-    print("done - all landmarks visited")
+    print("done")
 
 
 def calibrate():
-    """python3 rally.py calib"""
     print("12 x 30 deg left -> robot must end up facing exactly the same way")
     for _ in range(12):
         turn(np.radians(30))
@@ -487,8 +360,9 @@ def calibrate():
     drive(100.0, sonar_limit=0)
 
 
-try:
-    calibrate() if "calib" in sys.argv[1:] else main()
-finally:
-    arlo.stop()
-    cam.terminateCaptureThread()
+if __name__ == "__main__":
+    try:
+        calibrate() if "calib" in sys.argv[1:] else main()
+    finally:
+        arlo.stop()
+        cam.terminateCaptureThread()
