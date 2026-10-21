@@ -128,6 +128,7 @@ def sense():
     seen = {i: (np.mean([d for d, _ in v]), np.arctan2(np.mean([np.sin(a) for _, a in v]),
                                                          np.mean([np.cos(a) for _, a in v])))
             for i, v in raw.items()}
+    print("seen:", {i: (round(d), round(np.degrees(a))) for i, (d, a) in seen.items()})
     lms = {i: m for i, m in seen.items() if i in LANDMARKS}
     filter_update(lms)
     return lms, {i: m for i, m in seen.items() if i not in LANDMARKS}   # everything else = obstacle
@@ -137,10 +138,13 @@ def sense():
 def approach(target, lms):
     """Target is in view: turn to it and drive until VISIT_DIST. Returns True once visited."""
     d, a = lms[target]
-    if d <= VISIT_DIST:
-        print("%s visited (%.0f cm)" % (NAME[target], d)); return True
     turn(a)
-    driven, aborted = drive(min(d - VISIT_DIST, 60.0), sonar_limit=200)
+    if d <= VISIT_DIST + 60.0:
+        # Final stretch: drive it blind. Closer than ~40 cm the camera loses the
+        # marker (too close / out of frame), so we must not re-check it afterwards.
+        drive(max(d - VISIT_DIST, 0.0), sonar_limit=200)
+        print("%s visited (camera said %.0f cm)" % (NAME[target], d)); return True
+    driven, aborted = drive(60.0, sonar_limit=200)
     if aborted and d - driven > VISIT_DIST + 20:   # stopped far from the box -> obstacle
         avoid()
     return False
@@ -192,12 +196,13 @@ def main():
     # At the start we may see ONLY L1. A ring of particles around L1 has no
     # useful mean, so we need a second landmark to fix which side we are on.
     # Scan 360 deg; if nothing else is visible, move sideways around L1 and scan again.
-    for attempt in range(4):
+    for attempt in range(2):
         others = set()
         for _ in range(12):
             lms, _ = sense(); others |= set(lms) - {L1}; turn(np.radians(30))
         xs = [p.getX() for p in particles]; ys = [p.getY() for p in particles]
-        if others and np.std(xs) < 40 and np.std(ys) < 40:
+        print("scan done: others=%s std_x=%.0f std_y=%.0f" % (others, np.std(xs), np.std(ys)))
+        if others and np.std(xs) < 60 and np.std(ys) < 60:
             break                                   # particles collapsed to one place
         print("only L1 visible -> moving around it")
         lms, _ = sense()
