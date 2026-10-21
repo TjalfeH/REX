@@ -515,12 +515,12 @@ def go_to(target):
             lms = relocalise(target)
         gx, gy = LANDMARKS[target]
         if target in lms:
-            # straight line to the target blocked by a remembered obstacle? -> go around it first
+            # Always run RRT when we can localise and are far enough to plan
             if lms[target][0] > BLIND_DIST and localised():
                 x, y, th = pose()
                 wp = detour(x, y, gx, gy, target)
                 if wp is not None:
-                    print("target in view, but blocked -> detour via (%.0f, %.0f)" % wp)
+                    print("detour via (%.0f, %.0f)" % wp)
                     turn(wrap(np.arctan2(wp[1] - y, wp[0] - x) - th))
                     if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
                         avoid()
