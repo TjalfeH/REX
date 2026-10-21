@@ -607,18 +607,24 @@ def go_to(target):
             turn(wrap(np.arctan2(gy - y, gx - x) - th))
             if target in scan(target):
                 continue
-            # Not found but the other landmarks agree with the estimate (else LOST would have
-            # fired): probably hidden behind an obstacle -> creep closer towards the estimate.
+            # Not found -> creep closer, but still use RRT
             print("%s not visible -> moving closer" % NAME[target])
             x, y, th = pose()
-            turn(wrap(np.arctan2(gy - y, gx - x) - th))
-            gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT
             if gap > BLIND_DIST:
-                if drive(min(STEP, gap - BLIND_DIST + 10))[1]:
-                    avoid()
+                wp = detour(x, y, gx, gy, target)
+                if wp is not None:
+                    print("detour via (%.0f, %.0f)" % wp)
+                    turn(wrap(np.arctan2(wp[1] - y, wp[0] - x) - th))
+                    if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
+                        avoid()
+                else:
+                    turn(wrap(np.arctan2(gy - y, gx - x) - th))
+                    if drive(min(STEP, gap - BLIND_DIST + 10))[1]:
+                        avoid()
             else:
                 particle.add_uncertainty(particles, 80.0, np.radians(30))   # really lost -> relocalise
             continue
+        # Use RRT to navigate towards the target
         wp = detour(x, y, gx, gy, target)
         if wp is not None:
             print("detour via (%.0f, %.0f)" % wp)
@@ -627,6 +633,7 @@ def go_to(target):
         else:
             step = min(STEP, gap - SEE_DIST + 20)       # stop where the camera can see it
             tx, ty = gx, gy
+            last_rrt_path = [(x, y), (gx, gy)]
         turn(wrap(np.arctan2(ty - y, tx - x) - th))
         if drive(step)[1]:
             avoid()
