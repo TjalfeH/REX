@@ -394,7 +394,7 @@ def relocalise(target):
 
 # ---- RRT path planning -------------------------------------------------------
 RRT_STEP = 40.0                             # extend step [cm]
-RRT_ITER = 500                              # max iterations (arena is small, this is plenty)
+RRT_ITER = 2000                             # max iterations
 
 
 def rrt_collision(x, y, target):
@@ -479,7 +479,12 @@ _cached_wp_idx = 1                          # next waypoint index in cached path
 
 
 def detour(x, y, gx, gy, target):
-    """Plan around obstacles using RRT. Reuses cached path until obstacles change."""
+    """Plan around obstacles using RRT. Reuses cached path until obstacles change.
+    Returns (waypoint, status):
+      (wp, 'detour')  - follow this waypoint
+      (None, 'clear') - direct path is free
+      (None, 'fail')  - planning failed, obstacles block but no path found
+    """
     global last_rrt_path, _cached_path, _cached_wp_idx
     # reuse cached path if obstacles haven't changed
     if _cached_path and _cached_path[0] == target and _cached_path[1] == obstacles_version:
@@ -493,18 +498,25 @@ def detour(x, y, gx, gy, target):
                 break
         if _cached_wp_idx < len(path) - 1:
             last_rrt_path = path[_cached_wp_idx - 1:]
-            return path[_cached_wp_idx]
+            return path[_cached_wp_idx], 'detour'
         # reached end of cached path, fall through to replan
     # plan fresh
     path = rrt_plan(x, y, gx, gy, target)
-    last_rrt_path = path if path and len(path) > 2 else []
-    if path is None or len(path) <= 2:
+    if path is not None and len(path) > 2:
+        last_rrt_path = path
+        _cached_path = (target, obstacles_version, path)
+        _cached_wp_idx = 1
+        return path[1], 'detour'
+    if path is not None and len(path) <= 2:
+        # direct path is clear
         _cached_path = None
-        last_rrt_path = [(x, y), (gx, gy)]  # show direct line on the map
-        return None                         # direct path clear, or planning failed -> go direct
-    _cached_path = (target, obstacles_version, path)
-    _cached_wp_idx = 1
-    return path[1]
+        last_rrt_path = [(x, y), (gx, gy)]
+        return None, 'clear'
+    # planning failed - path blocked but RRT could not find a way around
+    _cached_path = None
+    last_rrt_path = []
+    print("RRT planning failed - obstacles block the path")
+    return None, 'fail'
 
 
 def approach(target, lms):
@@ -570,14 +582,16 @@ def go_to(target):
             # Always run RRT when localised to avoid obstacles on the way
             if localised():
                 x, y, th = pose()
-                wp = detour(x, y, gx, gy, target)
-                if wp is not None:
+                wp, status = detour(x, y, gx, gy, target)
+                if status == 'detour':
                     print("detour via (%.0f, %.0f)" % wp)
                     turn(wrap(np.arctan2(wp[1] - y, wp[0] - x) - th))
                     if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
                         avoid()
                     continue
-                last_rrt_path = [(x, y), (gx, gy)]
+                if status == 'fail':
+                    avoid()             # can't plan a path, try to move out of the way
+                    continue
             if approach(target, lms):
                 return True
             continue
@@ -594,29 +608,33 @@ def go_to(target):
             print("%s not visible -> moving closer" % NAME[target])
             x, y, th = pose()
             if gap > BLIND_DIST:
-                wp = detour(x, y, gx, gy, target)
-                if wp is not None:
+                wp, status = detour(x, y, gx, gy, target)
+                if status == 'detour':
                     print("detour via (%.0f, %.0f)" % wp)
                     turn(wrap(np.arctan2(wp[1] - y, wp[0] - x) - th))
                     if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
                         avoid()
-                else:
+                elif status == 'clear':
                     turn(wrap(np.arctan2(gy - y, gx - x) - th))
                     if drive(min(STEP, gap - BLIND_DIST + 10))[1]:
                         avoid()
+                else:
+                    avoid()             # planning failed
             else:
                 particle.add_uncertainty(particles, 80.0, np.radians(30))   # really lost -> relocalise
             continue
         # Use RRT to navigate towards the target
-        wp = detour(x, y, gx, gy, target)
-        if wp is not None:
+        wp, status = detour(x, y, gx, gy, target)
+        if status == 'detour':
             print("detour via (%.0f, %.0f)" % wp)
             step = min(STEP, np.hypot(wp[0] - x, wp[1] - y))
             tx, ty = wp
-        else:
+        elif status == 'clear':
             step = min(STEP, gap - SEE_DIST + 20)       # stop where the camera can see it
             tx, ty = gx, gy
-            last_rrt_path = [(x, y), (gx, gy)]
+        else:
+            avoid()                     # planning failed, try to move aside
+            continue
         turn(wrap(np.arctan2(ty - y, tx - x) - th))
         if drive(step)[1]:
             avoid()
