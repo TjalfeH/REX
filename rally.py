@@ -1,22 +1,33 @@
-"""
+r"""
 rally.py - DIKU RoboRally 2026 (REX exam assignment 6), short version.
+
+Track (Ex6 figure 1, seen from above, x to the right, y up):
+
+    L2 ----------- 400 ----------- L4
+     |  \                       /  |
+    300     \   obstacles   /     300
+     |   /                     \   |
+    L1 ----------------------------- L3
+
+  Route L1 -> L2 (up) -> L3 (diagonal) -> L4 (up) -> L1 (diagonal).
 
 Strategy (KISS):
   - Particle filter from Exercise 5 with the 4 known corner landmarks.
-  - Visit L1 -> L2 -> L3 -> L4 -> L1. "Visited" = within 40 cm of the box side,
-    so we stop at ~30 cm (front sonar) and never touch the box (3 min penalty).
+  - "Visited" = within 40 cm of the box side, so we stop at ~30 cm (front sonar)
+    and never touch the box (3 min penalty).
   - When the target is in view, drive on the camera measurement directly.
     Otherwise drive on the pose estimate, around the other landmarks
-    (wrong order = 14 min penalty) and around obstacles (any other ID / sonar).
+    (wrong order = 14 min penalty) and around remembered obstacles (any ID that
+    is not a landmark; their world position is stored when we see them).
   - After every visit we know how far we are from that box -> move all
     particles there ("snap"). If a measurement fits no particle at all, the
     filter is lost -> re-seed the particles from that measurement and scan.
 
 Race-day checklist:
-  1. python3 rally.py calib -> 12 x 30 deg must be exactly ONE full turn and the
+  1. Landmark IDs: race day uses 1, 2, 3, 4 (obstacles have ID > 4)!
+  2. python3 rally.py calib -> 12 x 30 deg must be exactly ONE full turn and the
      drive exactly 100 cm. If not, scale DEG_PER_SEC / CM_PER_SEC.
-  2. Stand at L1 and face L2: is L4 on your LEFT? -> L4_ON_LEFT = True.
-  3. Check the landmark IDs and measure ROBOT_FRONT.
+  3. Measure ROBOT_FRONT.
 """
 import sys
 import time
@@ -24,17 +35,15 @@ import numpy as np
 import particle, camera, robot
 
 # ---- constants (check on race day) -----------------------------------------
-BOX_HALF = 20.0                         # half box side [cm]
+BOX_HALF = 20.0                         # half landmark box side [cm]
 # 300 x 400 cm are measured between the INNER box sides -> add one full box width
 # to get centre-to-centre distances (the filter works with box centres).
-INNER_12, INNER_23 = 300.0, 400.0       # inner distance L1-L2 and L2-L3 [cm]
-L4_ON_LEFT = False                      # at L1 facing L2, is L4 on the left? (mirrors the map)
-L1, L2, L3, L4 = 5, 1, 3, 10            # ArUco ID of each corner landmark on our track
+INNER_H, INNER_W = 300.0, 400.0         # L1-L2 (vertical) and L2-L4 (horizontal) [cm]
+L1, L2, L3, L4 = 5, 1, 6, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
 ROBOT_FRONT = 20.0                      # wheel-axle centre -> camera / front sonar [cm] (MEASURE!)
 
-_A, _B = INNER_12 + 2 * BOX_HALF, INNER_23 + 2 * BOX_HALF
-_CORNERS = {L1: (0.0, 0.0), L2: (0.0, _A), L3: (_B, _A), L4: (_B, 0.0)}
-LANDMARKS = {i: ((y, x) if L4_ON_LEFT else (x, y)) for i, (x, y) in _CORNERS.items()}
+_W, _H = INNER_W + 2 * BOX_HALF, INNER_H + 2 * BOX_HALF
+LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, _H), L3: (_W, 0.0), L4: (_W, _H)}
 ROUTE = [L1, L2, L3, L4, L1]            # required order
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
@@ -42,6 +51,8 @@ VISIT_DIST = 30.0                       # stop distance front -> box side (< 40 
 BLIND_DIST = 130.0                      # below this the last stretch is driven without camera
 SEE_DIST = 160.0                        # from this gap on the camera should see the target
 KEEP_AWAY = 100.0                       # min distance of our path to a non-target landmark centre
+OBST_HALF = 20.0                        # half obstacle box side [cm] (cardboard box, guess)
+OBST_KEEP = 70.0                        # min distance of our path to an obstacle centre
 STEP = 50.0                             # driving step when target not in view [cm]
 SONAR_STOP = 450                        # [mm] > 40 cm, so we never "visit" a wrong box by accident
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
@@ -51,6 +62,7 @@ SIGMA_A = np.radians(10.0)              # bearing noise (distance noise grows wi
 arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 particles = []
+obstacles = {}                          # obstacle id -> (x, y) world position, remembered
 
 
 def wrap(a):
@@ -152,6 +164,8 @@ def pose():
 
 def localised():
     """True if the particles agree on one place (a ring around one landmark does not)."""
+    if not particles:
+        return False
     xs, ys, _ = as_arrays()
     return np.std(xs) < 50 and np.std(ys) < 50
 
@@ -171,6 +185,22 @@ def snap_to(lm_id):
     return gap
 
 
+def remember(obs):
+    """Store the world position of every obstacle we see (only when we know where we are)."""
+    if not obs or not localised():
+        return
+    x, y, th = pose()
+    cx, cy = x + ROBOT_FRONT * np.cos(th), y + ROBOT_FRONT * np.sin(th)    # camera position
+    for i, (d, a) in obs.items():
+        r = d + OBST_HALF
+        ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
+        if i in obstacles:              # average with earlier sightings
+            ox, oy = 0.5 * (ox + obstacles[i][0]), 0.5 * (oy + obstacles[i][1])
+        if i not in obstacles:
+            print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
+        obstacles[i] = (ox, oy)
+
+
 def sense():
     """Grab 3 frames, average per ID; update the filter. Returns (landmarks, obstacles) as {id: (dist, angle)}."""
     raw = {}
@@ -185,8 +215,10 @@ def sense():
             for i, v in raw.items()}
     print("seen:", {i: (round(d), round(np.degrees(a))) for i, (d, a) in seen.items()})
     lms = {i: m for i, m in seen.items() if i in LANDMARKS}
+    obs = {i: m for i, m in seen.items() if i not in LANDMARKS}       # everything else = obstacle
     filter_update(lms)
-    return lms, {i: m for i, m in seen.items() if i not in LANDMARKS}   # everything else = obstacle
+    remember(obs)
+    return lms, obs
 
 
 # ---- race -------------------------------------------------------------------
@@ -212,23 +244,24 @@ def relocalise(target):
 
 
 def detour(x, y, gx, gy, target):
-    """If the straight line to the goal passes a non-target landmark too closely, return a waypoint beside it."""
+    """First landmark/obstacle the straight line to the goal passes too closely -> waypoint beside it."""
+    things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
+    things += [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
     dx, dy = gx - x, gy - y
     length = max(np.hypot(dx, dy), 1e-9)
-    for lm_id, (lx, ly) in LANDMARKS.items():
-        if lm_id == target:
-            continue
+    best = None
+    for lx, ly, keep in things:
         t = ((lx - x) * dx + (ly - y) * dy) / length ** 2
         # behind us, beyond the goal, or we are already at the closest point (just left it) -> no problem
         if t >= 1 or t * length < 40:
             continue
         cx, cy = x + t * dx, y + t * dy
         off = np.hypot(cx - lx, cy - ly)
-        if off < KEEP_AWAY:
+        if off < keep and (best is None or t < best[0]):
             nx, ny = (cx - lx, cy - ly) if off > 1 else (-dy, dx)   # push out on the side we already pass
             n = np.hypot(nx, ny)
-            return lx + (KEEP_AWAY + 20) * nx / n, ly + (KEEP_AWAY + 20) * ny / n
-    return None
+            best = (t, (lx + (keep + 20) * nx / n, ly + (keep + 20) * ny / n))
+    return None if best is None else best[1]
 
 
 def approach(target, lms):
@@ -250,8 +283,9 @@ def approach(target, lms):
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
     # Further away: stop ~10 cm inside BLIND_DIST so the next sighting is guaranteed.
-    driven, aborted = drive(min(d - BLIND_DIST + 10.0, 80.0), sonar_limit=200)
-    if aborted and d - driven > VISIT_DIST + 20:   # stopped far from the box -> obstacle
+    # The stop point is >= 120 cm from the target, so the normal sonar limit only reacts to obstacles.
+    driven, aborted = drive(min(d - BLIND_DIST + 10.0, 80.0))
+    if aborted:
         avoid()
     return False
 
@@ -260,26 +294,46 @@ def go_to(target):
     """One leg: reach `target` using the pose estimate until the camera sees it."""
     for _ in range(60):
         lms, obs = sense()
+        # obstacle box straight ahead (camera) -> evade first
+        if any(d < 60 and abs(a) < np.radians(25) for d, a in obs.values()):
+            avoid(); continue
         if target not in lms and not localised():
             lms = relocalise(target)
+        gx, gy = LANDMARKS[target]
         if target in lms:
+            # straight line to the target blocked by a remembered obstacle? -> go around it first
+            if lms[target][0] > BLIND_DIST and localised():
+                x, y, th = pose()
+                wp = detour(x, y, gx, gy, target)
+                if wp is not None:
+                    print("target in view, but blocked -> detour via (%.0f, %.0f)" % wp)
+                    turn(wrap(np.arctan2(wp[1] - y, wp[0] - x) - th))
+                    if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
+                        avoid()
+                    continue
             if approach(target, lms):
                 return True
             continue
-        # obstacle box straight ahead (camera) -> evade before planning
-        if any(d < 60 and abs(a) < np.radians(25) for d, a in obs.values()):
-            avoid(); continue
         x, y, th = pose()
-        gx, gy = LANDMARKS[target]
         gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT     # our front -> target box side
         print("pose x=%.0f y=%.0f th=%.0f deg | %s gap %.0f cm"
               % (x, y, np.degrees(th), NAME[target], gap))
         if gap < SEE_DIST:
             # The camera should see it from here: face it, then look around.
             turn(wrap(np.arctan2(gy - y, gx - x) - th))
-            if target not in scan(target):
-                print("%s not where expected -> trusting the estimate less" % NAME[target])
-                particle.add_uncertainty(particles, 80.0, np.radians(30))
+            if target in scan(target):
+                continue
+            # Not found but the other landmarks agree with the estimate (else LOST would have
+            # fired): probably hidden behind an obstacle -> creep closer towards the estimate.
+            print("%s not visible -> moving closer" % NAME[target])
+            x, y, th = pose()
+            turn(wrap(np.arctan2(gy - y, gx - x) - th))
+            gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT
+            if gap > BLIND_DIST:
+                if drive(min(STEP, gap - BLIND_DIST + 10))[1]:
+                    avoid()
+            else:
+                particle.add_uncertainty(particles, 80.0, np.radians(30))   # really lost -> relocalise
             continue
         wp = detour(x, y, gx, gy, target)
         if wp is not None:
@@ -296,6 +350,7 @@ def go_to(target):
 
 
 def main():
+    print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
     # Start: turn until L1 is in view, approach it on the camera (= first visit).
     # The visit seeds the particles on a ring around L1 at the sonar distance.
     for _ in range(60):
