@@ -141,9 +141,13 @@ def approach(target, lms):
     d, a = lms[target]
     turn(a)
     if d <= BLIND_DIST:
-        # Final stretch: drive it blind. Closer than ~90 cm the camera loses the
-        # marker (too close / out of frame), so we must not re-check it afterwards.
-        drive(max(d - VISIT_DIST, 0.0), sonar_limit=200)
+        # Final stretch: closer than ~90 cm the camera loses the marker, so drive
+        # without re-checking it. The front sonar does the actual stopping
+        # (330 mm), the time-based distance is only the upper bound.
+        remaining = max(d - VISIT_DIST, 0.0)
+        driven, aborted = drive(remaining, sonar_limit=330)
+        if aborted and remaining - driven > 15.0:      # sonar glitch far from the box -> try the rest once
+            drive(remaining - driven, sonar_limit=330)
         print("%s visited (camera said %.0f cm)" % (NAME[target], d)); return True
     # Further away: stop ~10 cm inside BLIND_DIST so the next sighting is guaranteed.
     driven, aborted = drive(min(d - BLIND_DIST + 10.0, 80.0), sonar_limit=200)
@@ -154,6 +158,7 @@ def approach(target, lms):
 
 def go_to(target):
     """One leg: reach `target` using the pose estimate until the camera sees it."""
+    blind_steps = 0                      # steps in a row without seeing any landmark
     for _ in range(60):
         lms, obs = sense()
         if target in lms:
@@ -163,11 +168,20 @@ def go_to(target):
         # obstacle box straight ahead (camera) -> evade before planning
         if any(d < 60 and abs(a) < np.radians(25) for d, a in obs.values()):
             avoid(); continue
+        blind_steps = 0 if lms else blind_steps + 1
+        if blind_steps >= 3:
+            # Nothing seen for a while: the estimate may be off. Re-localise with a full scan.
+            print("no landmarks for 3 steps -> 360 scan")
+            for _ in range(12):
+                turn(np.radians(30)); sense()
+            blind_steps = 0
         est = particle.estimate_pose(particles)
         x, y, th = est.getX(), est.getY(), est.getTheta()
         gx, gy = LANDMARKS[target]
         dist = np.hypot(gx - x, gy - y)
         heading = np.arctan2(gy - y, gx - x)
+        print("pose x=%.0f y=%.0f th=%.0f deg | %s at %.0f cm, heading %.0f deg"
+              % (x, y, np.degrees(th), NAME[target], dist, np.degrees(heading)))
         # straight line too close to another landmark? -> detour sideways around it
         for lm_id, (lx, ly) in LANDMARKS.items():
             if lm_id == target:
