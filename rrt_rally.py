@@ -64,6 +64,7 @@ arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 particles = []
 obstacles = {}                          # obstacle id -> (x, y) world position, remembered
+obstacles_version = 0                   # bumped when obstacle map changes
 odo_ratios = []                         # measured (camera distance change) / (commanded drive)
 last_step = None                        # (target, camera dist, commanded drive, drive count) of the last approach step
 n_drives = 0                            # counts drive() calls, so we know if anything moved in between
@@ -306,6 +307,7 @@ def snap_to(lm_id):
 
 def remember(obs):
     """Store the world position of every obstacle we see (only when we know where we are)."""
+    global obstacles_version
     if not obs or not localised():
         return
     x, y, th = pose()
@@ -315,11 +317,18 @@ def remember(obs):
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
         if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
             continue                    # outside the track square -> not a race obstacle
+        changed = False
         if i in obstacles:              # average with earlier sightings
-            ox, oy = 0.5 * (ox + obstacles[i][0]), 0.5 * (oy + obstacles[i][1])
-        if i not in obstacles:
+            old_x, old_y = obstacles[i]
+            ox, oy = 0.5 * (ox + old_x), 0.5 * (oy + old_y)
+            if np.hypot(ox - old_x, oy - old_y) > 10.0:
+                changed = True
+        else:
             print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
+            changed = True
         obstacles[i] = (ox, oy)
+        if changed:
+            obstacles_version += 1
 
 
 def sense():
@@ -447,14 +456,36 @@ def rrt_plan(sx, sy, gx, gy, target):
     return None
 
 
+_cached_path = None                         # (target, obstacles_version, path)
+_cached_wp_idx = 1                          # next waypoint index in cached path
+
+
 def detour(x, y, gx, gy, target):
-    """Plan around obstacles using RRT. Returns next waypoint or None if path is clear."""
-    global last_rrt_path
+    """Plan around obstacles using RRT. Reuses cached path until obstacles change."""
+    global last_rrt_path, _cached_path, _cached_wp_idx
+    # reuse cached path if obstacles haven't changed
+    if _cached_path and _cached_path[0] == target and _cached_path[1] == obstacles_version:
+        path = _cached_path[2]
+        # advance to nearest upcoming waypoint
+        while _cached_wp_idx < len(path) - 1:
+            wx, wy = path[_cached_wp_idx]
+            if np.hypot(wx - x, wy - y) < RRT_STEP:
+                _cached_wp_idx += 1
+            else:
+                break
+        if _cached_wp_idx < len(path) - 1:
+            last_rrt_path = path[_cached_wp_idx - 1:]
+            return path[_cached_wp_idx]
+        # reached end of cached path, fall through to replan
+    # plan fresh
     path = rrt_plan(x, y, gx, gy, target)
     last_rrt_path = path if path and len(path) > 2 else []
     if path is None or len(path) <= 2:
+        _cached_path = None
         return None                         # direct path clear, or planning failed -> go direct
-    return path[1]                          # first intermediate waypoint
+    _cached_path = (target, obstacles_version, path)
+    _cached_wp_idx = 1
+    return path[1]
 
 
 def approach(target, lms):
@@ -503,9 +534,11 @@ def drive_scale():
 
 def go_to(target):
     """One leg: reach `target` using the pose estimate until the camera sees it."""
-    global current_target, last_rrt_path
+    global current_target, last_rrt_path, _cached_path, _cached_wp_idx
     current_target = target
     last_rrt_path = []
+    _cached_path = None
+    _cached_wp_idx = 1
     for _ in range(60):
         lms, obs = sense()
         # obstacle box straight ahead (camera) -> evade first
