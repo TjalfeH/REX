@@ -20,12 +20,13 @@ BOX_HALF = 20.0                         # half box side [cm]
 # to get centre-to-centre distances (the filter works with box centres).
 INNER_W, INNER_H = 300.0, 400.0
 # ArUco ID of each corner landmark as set up on our track (L1..L4).
-L1, L2, L3, L4 = 1, 10, 5, 3
+L1, L2, L3, L4 = 5, 1, 3, 10
 LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, INNER_W + 2 * BOX_HALF),
              L3: (INNER_H + 2 * BOX_HALF, INNER_W + 2 * BOX_HALF), L4: (INNER_H + 2 * BOX_HALF, 0.0)}
 ROUTE = [L1, L2, L3, L4, L1]            # required order
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 VISIT_DIST = 30.0                       # stop distance to box side (< 40 cm rule)
+BLIND_DIST = 130.0                      # below this the last stretch is driven without camera
 KEEP_AWAY = 85.0                        # min distance to a non-target landmark centre
 STEP = 50.0                             # driving step when target not in view [cm]
 SONAR_STOP = 350                        # front sonar abort [mm]
@@ -139,12 +140,13 @@ def approach(target, lms):
     """Target is in view: turn to it and drive until VISIT_DIST. Returns True once visited."""
     d, a = lms[target]
     turn(a)
-    if d <= VISIT_DIST + 60.0:
-        # Final stretch: drive it blind. Closer than ~40 cm the camera loses the
+    if d <= BLIND_DIST:
+        # Final stretch: drive it blind. Closer than ~90 cm the camera loses the
         # marker (too close / out of frame), so we must not re-check it afterwards.
         drive(max(d - VISIT_DIST, 0.0), sonar_limit=200)
         print("%s visited (camera said %.0f cm)" % (NAME[target], d)); return True
-    driven, aborted = drive(60.0, sonar_limit=200)
+    # Further away: stop ~10 cm inside BLIND_DIST so the next sighting is guaranteed.
+    driven, aborted = drive(min(d - BLIND_DIST + 10.0, 80.0), sonar_limit=200)
     if aborted and d - driven > VISIT_DIST + 20:   # stopped far from the box -> obstacle
         avoid()
     return False
