@@ -64,6 +64,7 @@ OBST_HALF = 12.0                        # marker face -> obstacle box centre [cm
 OBST_RADIUS = 17.5                      # obstacle box radius [cm] (Box_Radius, Ex4)
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0   # path -> obstacle centre; 30 cm for position errors
 STEP = 50.0                             # driving step when target not in view [cm]
+BACK_DIST = 50.0                        # back up at the start if L1 is not in the first image [cm]
 SONAR_STOP = 450                        # [mm] > 40 cm, so we never "visit" a wrong box by accident
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
 N = 1000                                # particles
@@ -135,6 +136,27 @@ def avoid():
     l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
     turn(np.radians(60) if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else np.radians(-60))
     drive(35.0)
+
+
+def back_up(dist):
+    """Drive backwards up to `dist` cm - only as far as the back sonar says is free
+    (keeping 20 cm), and stop if something shows up behind us.
+    Only used at the start, before there are particles, so no particle update."""
+    s = arlo.read_back_ping_sensor()
+    if s > 0:                           # valid reading -> leave 20 cm to whatever is behind us
+        dist = min(dist, s / 10.0 - 20.0)
+    if dist < 10:
+        print("no room behind us (back sonar %d mm) -> not backing up" % s)
+        return
+    print("backing up %.0f cm (back sonar %d mm)" % (dist, s))
+    t0 = time.time()
+    arlo.go_diff(SPEED, SPEED, 0, 0)
+    while time.time() - t0 < dist / CM_PER_SEC:
+        b = arlo.read_back_ping_sensor()
+        if 0 < b < 200:                 # something closer than 20 cm behind us -> stop
+            break
+        time.sleep(0.05)
+    arlo.stop(); time.sleep(0.3)
 
 
 def step_to(point, dist):
@@ -414,6 +436,11 @@ def main():
     print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
     # Start: turn until L1 is in view, approach it on the camera (= first visit).
     # The visit seeds the particles on a ring around L1 at the sonar distance.
+    # Placed too close to L1, the marker may not fit into the image (closer than ~90 cm
+    # the camera loses it) -> back up a bit first; the search below then sees it.
+    if L1 not in sense()[0]:
+        print("L1 not in the first image - maybe too close -> backing up")
+        back_up(BACK_DIST)
     misses = 0
     for _ in range(60):
         lms, obs = sense()
