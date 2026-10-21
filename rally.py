@@ -39,8 +39,12 @@ BOX_HALF = 20.0                         # half landmark box side [cm]
 # 300 x 400 cm are measured between the INNER box sides -> add one full box width
 # to get centre-to-centre distances (the filter works with box centres).
 INNER_H, INNER_W = 300.0, 400.0         # L1-L2 (vertical) and L2-L4 (horizontal) [cm]
-L1, L2, L3, L4 = 5, 1, 6, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
-ROBOT_FRONT = 20.0                      # wheel-axle centre -> camera / front sonar [cm] (MEASURE!)
+L1, L2, L3, L4 = 5, 1, 3, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
+ROBOT_FRONT = 21.0                      # wheel-axle centre -> camera (CAM_OFFSET from our Ex4 rrtPlan.py)
+ROBOT_RADIUS = 28.0                     # robot footprint radius [cm] (Ex4)
+# Camera calibration from our Ex4 (rrtPlan.py). camera.py uses f=1687 and 15 cm markers,
+# which makes every distance 1.33x too long (matches the measured "drive ratio" 1.29-1.40).
+CAM_F, MARKER_SIZE = 1315.0, 0.145
 
 _W, _H = INNER_W + 2 * BOX_HALF, INNER_H + 2 * BOX_HALF
 LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, _H), L3: (_W, 0.0), L4: (_W, _H)}
@@ -51,8 +55,9 @@ VISIT_DIST = 30.0                       # stop distance front -> box side (< 40 
 BLIND_DIST = 130.0                      # below this the last stretch is driven without camera
 SEE_DIST = 160.0                        # from this gap on the camera should see the target
 KEEP_AWAY = 100.0                       # min distance of our path to a non-target landmark centre
-OBST_HALF = 20.0                        # half obstacle box side [cm] (cardboard box, guess)
-OBST_KEEP = 70.0                        # min distance of our path to an obstacle centre
+OBST_HALF = 12.0                        # marker face -> obstacle box centre [cm] (Box_Shift, Ex4)
+OBST_RADIUS = 17.5                      # obstacle box radius [cm] (Box_Radius, Ex4)
+OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0   # path -> obstacle centre; 30 cm for position errors
 STEP = 50.0                             # driving step when target not in view [cm]
 SONAR_STOP = 450                        # [mm] > 40 cm, so we never "visit" a wrong box by accident
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
@@ -61,6 +66,8 @@ SIGMA_A = np.radians(10.0)              # bearing noise (distance noise grows wi
 
 arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
+cam.intrinsic_matrix = np.array([[CAM_F, 0, 820.0], [0, CAM_F, 616.0], [0, 0, 1]], dtype=np.float64)
+cam.arucoMarkerLength = MARKER_SIZE
 particles = []
 obstacles = {}                          # obstacle id -> (x, y) world position, remembered
 odo_ratios = []                         # measured (camera distance change) / (commanded drive)
@@ -199,6 +206,8 @@ def remember(obs):
     x, y, th = pose()
     cx, cy = x + ROBOT_FRONT * np.cos(th), y + ROBOT_FRONT * np.sin(th)    # camera position
     for i, (d, a) in obs.items():
+        if d > 350:
+            continue                    # far sightings are too inaccurate to plan with
         r = d + OBST_HALF
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
         if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
@@ -321,8 +330,8 @@ def go_to(target):
     """One leg: reach `target` using the pose estimate until the camera sees it."""
     for _ in range(60):
         lms, obs = sense()
-        # obstacle box straight ahead (camera) -> evade first
-        if any(d < 60 and abs(a) < np.radians(25) for d, a in obs.values()):
+        # obstacle box close and in our driving lane (camera) -> evade first
+        if any(d < 80 and abs(d * np.sin(a)) < ROBOT_RADIUS + OBST_RADIUS for d, a in obs.values()):
             avoid(); continue
         if target not in lms and not localised():
             lms = relocalise(target)
