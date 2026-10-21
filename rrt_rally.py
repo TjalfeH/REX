@@ -330,7 +330,7 @@ def snap_to(lm_id):
 
 def remember(obs):
     """Store the world position of every obstacle we see (only when we know where we are)."""
-    global obstacles_version
+    global obstacles_version, last_rrt_path, _cached_path
     if not obs or not localised():
         return
     x, y, th = pose()
@@ -353,6 +353,8 @@ def remember(obs):
             ox, oy = 0.5 * (ox + old_x), 0.5 * (oy + old_y)
             if np.hypot(ox - old_x, oy - old_y) > 10.0:
                 obstacles_version += 1
+                last_rrt_path = []
+                _cached_path = None
             obstacles[best_key] = (ox, oy)
         else:                           # new obstacle (or same ID far away = second box)
             seq = sum(1 for k in obstacles if k.startswith("%d_" % i))
@@ -360,6 +362,8 @@ def remember(obs):
             print("obstacle %s at (%.0f, %.0f)" % (key, ox, oy))
             obstacles[key] = (ox, oy)
             obstacles_version += 1
+            last_rrt_path = []
+            _cached_path = None
 
 
 def sense():
