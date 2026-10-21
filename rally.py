@@ -39,7 +39,7 @@ BOX_HALF = 20.0                         # half landmark box side [cm]
 # 300 x 400 cm are measured between the INNER box sides -> add one full box width
 # to get centre-to-centre distances (the filter works with box centres).
 INNER_H, INNER_W = 300.0, 400.0         # L1-L2 (vertical) and L2-L4 (horizontal) [cm]
-L1, L2, L3, L4 = 5, 1, 6, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
+L1, L2, L3, L4 = 5, 1, 3, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
 ROBOT_FRONT = 20.0                      # wheel-axle centre -> camera / front sonar [cm] (MEASURE!)
 
 _W, _H = INNER_W + 2 * BOX_HALF, INNER_H + 2 * BOX_HALF
@@ -63,6 +63,9 @@ arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 particles = []
 obstacles = {}                          # obstacle id -> (x, y) world position, remembered
+odo_ratios = []                         # measured (camera distance change) / (commanded drive)
+last_step = None                        # (target, camera dist, commanded drive, drive count) of the last approach step
+n_drives = 0                            # counts drive() calls, so we know if anything moved in between
 
 
 def wrap(a):
@@ -86,6 +89,8 @@ def turn(angle):
 
 def drive(dist, sonar_limit=SONAR_STOP):
     """Drive forward [cm], abort if the front sonar sees something close. Returns (driven, aborted)."""
+    global n_drives
+    n_drives += 1
     if dist <= 0:
         return 0.0, False
     t0, aborted = time.time(), False
@@ -163,11 +168,13 @@ def pose():
 
 
 def localised():
-    """True if the particles agree on one place (a ring around one landmark does not)."""
+    """True if the particles agree on one pose. A ring around one landmark does not: its
+    positions can be close together (small ring) but its headings point everywhere."""
     if not particles:
         return False
-    xs, ys, _ = as_arrays()
-    return np.std(xs) < 50 and np.std(ys) < 50
+    xs, ys, ths = as_arrays()
+    heading_agree = np.hypot(np.mean(np.cos(ths)), np.mean(np.sin(ths)))   # 1 = all equal
+    return np.std(xs) < 50 and np.std(ys) < 50 and heading_agree > 0.9
 
 
 def snap_to(lm_id):
@@ -194,6 +201,8 @@ def remember(obs):
     for i, (d, a) in obs.items():
         r = d + OBST_HALF
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
+        if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
+            continue                    # outside the track square -> not a race obstacle
         if i in obstacles:              # average with earlier sightings
             ox, oy = 0.5 * (ox + obstacles[i][0]), 0.5 * (oy + obstacles[i][1])
         if i not in obstacles:
@@ -266,13 +275,24 @@ def detour(x, y, gx, gy, target):
 
 def approach(target, lms):
     """Target is in view: turn to it and drive until VISIT_DIST. Returns True once visited."""
+    global last_step
     d, a = lms[target]
+    # Learn how far we really drive: compare the camera distance before and after the
+    # previous approach step (nothing else may have moved us in between).
+    if last_step and last_step[0] == target and last_step[3] == n_drives:
+        r = (last_step[1] - d) / last_step[2]
+        if 0.7 < r < 1.5:
+            odo_ratios.append(r)
+            print("drive ratio %.2f (median %.2f)" % (r, drive_scale()))
+    last_step = None
     turn(a)
+    k = drive_scale()
     if d <= BLIND_DIST:
         # Final stretch: closer than ~90 cm the camera loses the marker, so drive
-        # without re-checking it. The front sonar does the actual stopping
-        # (330 mm), the time-based distance is only the upper bound.
-        remaining = max(d - VISIT_DIST, 0.0)
+        # without re-checking it. The front sonar should do the stopping (330 mm),
+        # but it misses boxes approached at an angle (sound reflects away), so the
+        # time-based distance must be right as well -> scaled by the learned ratio.
+        remaining = max(d - VISIT_DIST, 0.0) / k
         driven, aborted = drive(remaining, sonar_limit=330)
         if aborted and remaining - driven > 15.0:      # sonar glitch far from the box -> try the rest once
             drive(remaining - driven, sonar_limit=330)
@@ -284,10 +304,17 @@ def approach(target, lms):
         return True
     # Further away: stop ~10 cm inside BLIND_DIST so the next sighting is guaranteed.
     # The stop point is >= 120 cm from the target, so the normal sonar limit only reacts to obstacles.
-    driven, aborted = drive(min(d - BLIND_DIST + 10.0, 80.0))
+    driven, aborted = drive(min(d - BLIND_DIST + 10.0, 80.0) / k)
     if aborted:
         avoid()
+    else:
+        last_step = (target, d, driven, n_drives)
     return False
+
+
+def drive_scale():
+    """Median ratio camera-distance-change / commanded drive (1.0 until we have data)."""
+    return float(np.median(odo_ratios)) if odo_ratios else 1.0
 
 
 def go_to(target):
