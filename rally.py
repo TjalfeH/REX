@@ -101,7 +101,7 @@ def expected(p, lm_id):
 def filter_update(meas):
     """Weight with a Gaussian likelihood, then systematic resampling."""
     global particles
-    if not meas:
+    if not meas or not particles:       # no particles yet during the start phase
         return
     w = np.ones(N)
     for i, p in enumerate(particles):
