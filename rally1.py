@@ -145,12 +145,8 @@ def ring(lm_id, d, a, n=N):
 
 def filter_update(meas, check_lost=True):
     """Gaussian likelihood + systematic resampling. Re-seeds if no particle fits at all."""
-    if not meas:
+    if not meas or not particles:       # no particles yet during the start phase
         return
-    if not particles:                   # first landmark ever seen -> start with a ring around it
-        lm_id = min(meas, key=lambda i: meas[i][0])
-        set_particles(*ring(lm_id, *meas[lm_id]))
-        check_lost = False
     xs, ys, ths = as_arrays()
     logw = np.zeros(len(xs))
     for lm_id, (d, a) in meas.items():
@@ -389,66 +385,16 @@ def go_to(target):
     return False
 
 
-def sonar_cm():
-    """Median of 3 front sonar readings [cm], None if no echo."""
-    vals = [arlo.read_front_ping_sensor() for _ in range(3)]
-    vals = [v / 10.0 for v in vals if 0 < v < 3000]
-    return float(np.median(vals)) if vals else None
-
-
-def back(dist):
-    """Reverse [cm]; the back sonar stops it. Also moves the particles."""
-    global n_drives
-    n_drives += 1
-    t0 = time.time()
-    arlo.go_diff(SPEED, SPEED, 0, 0)
-    while time.time() - t0 < dist / CM_PER_SEC:
-        s = arlo.read_back_ping_sensor()
-        if 0 < s < 250:
-            break
-        time.sleep(0.05)
-    elapsed = time.time() - t0
-    arlo.stop(); time.sleep(0.3)
-    driven = min(dist, elapsed * CM_PER_SEC)
-    for p in particles:
-        particle.move_particle(p, -driven, 0.0)
-    particle.add_uncertainty(particles, 2.0 + 0.05 * driven, np.radians(3))
-
-
-def start_at_L1():
-    """Rules: we start near L1 and FACE it, at unknown distance. Visit it.
-    The visit seeds the particles on a ring around L1 at the sonar distance."""
-    # Camera does not see L1 although we face it -> we are too close (marker below the
-    # camera's view). If the sonar confirms the box, drive to 30 cm. The sonar misses boxes
-    # that stand at an angle (echo reflects away), so otherwise back up until the camera sees it.
-    for attempt in range(4):
-        lms, _ = sense()
-        if L1 in lms:
-            break
-        s = sonar_cm()
-        print("L1 not in camera view, front sonar:", "none" if s is None else "%.0f cm" % s)
-        if s is not None and s < BLIND_DIST:
-            if s > VISIT_DIST + 5:
-                drive(s - VISIT_DIST, sonar_limit=330)
-            print("L1 visited (sonar now %.0f cm)" % snap_to(L1))
-            return
-        if attempt < 3:
-            print("backing up 40 cm to get L1 into view")
-            back(40.0)
-    # Normal case: L1 in view (or not found at all -> turn and search).
-    for _ in range(60):
-        lms, _ = sense()
-        if L1 in lms:
-            if approach(L1, lms):
-                return
-            continue
-        turn(np.radians(30))
-    print("L1 not found - continuing anyway")
-
-
 def main():
     print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
-    start_at_L1()
+    # Start: turn until L1 is in view, approach it on the camera (= first visit).
+    # The visit seeds the particles on a ring around L1 at the sonar distance.
+    for _ in range(60):
+        lms, _ = sense()
+        if L1 not in lms:
+            turn(np.radians(30)); continue
+        if approach(L1, lms):
+            break
     # A ring around L1 has no useful mean -> scan until a second landmark fixes our side.
     relocalise(L2)
     for target in ROUTE[1:]:
