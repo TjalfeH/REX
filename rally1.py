@@ -35,7 +35,7 @@ import particle, camera, robot
 # ---- track ------------------------------------------------------------------
 BOX_HALF = 20.0                                 # half landmark box side [cm]
 W, H = 400 + 2 * BOX_HALF, 300 + 2 * BOX_HALF   # 400/300 are between the INNER sides -> centre to centre
-L1, L2, L3, L4 = (5, 3, 6, 10) if "practice" in sys.argv else (1, 2, 3, 4)
+L1, L2, L3, L4 = (5, 3, 6, 10) 
 LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, H), L3: (W, 0.0), L4: (W, H)}
 ROUTE = [L1, L2, L3, L4, L1]
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
