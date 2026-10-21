@@ -29,6 +29,7 @@ Race-day checklist:
      drive exactly 100 cm. If not, scale DEG_PER_SEC / CM_PER_SEC.
   3. Measure ROBOT_FRONT.
 """
+import os
 import sys
 import time
 import numpy as np
@@ -66,6 +67,94 @@ obstacles = {}                          # obstacle id -> (x, y) world position, 
 odo_ratios = []                         # measured (camera distance change) / (commanded drive)
 last_step = None                        # (target, camera dist, commanded drive, drive count) of the last approach step
 n_drives = 0                            # counts drive() calls, so we know if anything moved in between
+
+
+last_rrt_path = []                      # last planned RRT path for display
+current_target = None                   # which landmark we are heading to
+
+# ---- terminal arena display --------------------------------------------------
+ARENA_COLS = 88                         # characters wide (x axis)
+ARENA_ROWS = 40                         # characters tall (y axis, bottom = row 0)
+ARENA_PAD = 80.0                        # cm padding around the track
+
+def _world_to_cell(wx, wy):
+    """Map world cm to (col, row) in the grid. Row 0 = bottom of arena."""
+    cx = int((wx + ARENA_PAD) / (_W + 2 * ARENA_PAD) * ARENA_COLS)
+    cy = int((wy + ARENA_PAD) / (_H + 2 * ARENA_PAD) * ARENA_ROWS)
+    return max(0, min(ARENA_COLS - 1, cx)), max(0, min(ARENA_ROWS - 1, cy))
+
+
+def draw_arena():
+    """Render the arena to the terminal with ANSI colours."""
+    # grid[row][col] = (char, colour_code)
+    grid = [[('. ', '90')] * ARENA_COLS for _ in range(ARENA_ROWS)]
+
+    # arena boundary
+    x0c, y0c = _world_to_cell(-BOX_HALF, -BOX_HALF)
+    x1c, y1c = _world_to_cell(_W + BOX_HALF, _H + BOX_HALF)
+    for c in range(x0c, x1c + 1):
+        grid[y0c][c] = ('--', '37')
+        grid[y1c][c] = ('--', '37')
+    for r in range(y0c, y1c + 1):
+        grid[r][x0c] = ('| ', '37')
+        grid[r][x1c] = (' |', '37')
+
+    # landmarks (green = visited, cyan = current target, yellow = other)
+    visited = set()
+    if current_target is not None:
+        idx = ROUTE.index(current_target)
+        visited = set(ROUTE[:idx])
+    for lm_id, (lx, ly) in LANDMARKS.items():
+        c, r = _world_to_cell(lx, ly)
+        label = NAME.get(lm_id, str(lm_id))
+        if lm_id in visited:
+            colour = '32'       # green
+        elif lm_id == current_target:
+            colour = '36'       # cyan
+        else:
+            colour = '33'       # yellow
+        grid[r][c] = (label.ljust(2), colour)
+
+    # obstacles (red)
+    for oid, (ox, oy) in obstacles.items():
+        c, r = _world_to_cell(ox, oy)
+        grid[r][c] = ('XX', '31')
+
+    # last RRT path (magenta dots + lines)
+    if len(last_rrt_path) >= 2:
+        for i in range(len(last_rrt_path) - 1):
+            ax, ay = last_rrt_path[i]
+            bx, by = last_rrt_path[i + 1]
+            steps = int(np.hypot(bx - ax, by - ay) / 5.0) + 1
+            for t in np.linspace(0, 1, steps):
+                px, py = ax + t * (bx - ax), ay + t * (by - ay)
+                c, r = _world_to_cell(px, py)
+                if grid[r][c][1] == '90':       # only overwrite empty cells
+                    grid[r][c] = ('..', '35')
+        for wx, wy in last_rrt_path:
+            c, r = _world_to_cell(wx, wy)
+            if grid[r][c][1] in ('90', '35'):
+                grid[r][c] = ('<>', '35')
+
+    # robot pose (white, bold)
+    if particles and localised():
+        x, y, th = pose()
+        c, r = _world_to_cell(x, y)
+        arrows = ['>>', '^^', '<<', 'vv']
+        idx = int(round(th / (np.pi / 2))) % 4
+        grid[r][c] = (arrows[idx], '1;37')
+
+    # render top to bottom
+    out = ['\033[2J\033[H']     # clear screen, cursor home
+    out.append('  ARENA  (green=visited, cyan=target, red=obstacle, magenta=path)\n')
+    for r in range(ARENA_ROWS - 1, -1, -1):
+        row_str = ''
+        for c in range(ARENA_COLS):
+            ch, col = grid[r][c]
+            row_str += '\033[%sm%s\033[0m' % (col, ch)
+        out.append(row_str + '\n')
+    sys.stdout.write(''.join(out))
+    sys.stdout.flush()
 
 
 def wrap(a):
@@ -227,6 +316,7 @@ def sense():
     obs = {i: m for i, m in seen.items() if i not in LANDMARKS}       # everything else = obstacle
     filter_update(lms)
     remember(obs)
+    draw_arena()
     return lms, obs
 
 
@@ -336,7 +426,9 @@ def rrt_plan(sx, sy, gx, gy, target):
 
 def detour(x, y, gx, gy, target):
     """Plan around obstacles using RRT. Returns next waypoint or None if path is clear."""
+    global last_rrt_path
     path = rrt_plan(x, y, gx, gy, target)
+    last_rrt_path = path if path and len(path) > 2 else []
     if path is None or len(path) <= 2:
         return None                         # direct path clear, or planning failed -> go direct
     return path[1]                          # first intermediate waypoint
@@ -388,6 +480,9 @@ def drive_scale():
 
 def go_to(target):
     """One leg: reach `target` using the pose estimate until the camera sees it."""
+    global current_target, last_rrt_path
+    current_target = target
+    last_rrt_path = []
     for _ in range(60):
         lms, obs = sense()
         # obstacle box straight ahead (camera) -> evade first
