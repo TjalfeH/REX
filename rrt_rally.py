@@ -584,8 +584,8 @@ def go_to(target):
             lms = relocalise(target)
         gx, gy = LANDMARKS[target]
         if target in lms:
-            # Always run RRT when we can localise and are far enough to plan
-            if lms[target][0] > BLIND_DIST and localised():
+            # Always run RRT when localised to avoid obstacles on the way
+            if localised():
                 x, y, th = pose()
                 wp = detour(x, y, gx, gy, target)
                 if wp is not None:
@@ -594,8 +594,6 @@ def go_to(target):
                     if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
                         avoid()
                     continue
-            if localised():
-                x, y, _ = pose()
                 last_rrt_path = [(x, y), (gx, gy)]
             if approach(target, lms):
                 return True
