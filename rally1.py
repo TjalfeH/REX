@@ -56,8 +56,13 @@ LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, _H), L3: (_W, 0.0), L4: (_W, _H)}
 ROUTE = [L1, L2, L3, L4, L1]            # required order
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
-VISIT_DIST = 25.0                       # stop distance front -> box side (< 40 cm rule)
+VISIT_DIST = 30.0                       # stop distance front -> box side (< 40 cm rule)
 BLIND_DIST = 130.0                      # below this the last stretch is driven without camera
+# The blind stretch ends at this camera -> marker distance. The bumper is ~7 cm in front of the
+# camera (ROBOT_RADIUS - ROBOT_FRONT), so head-on it is ~38 cm from the box and the sonar creeps
+# to VISIT_DIST. On a diagonal the box corner sticks out ~15 cm towards us (markers are on every
+# side): ~23 cm left -> no bump, and still visited (40 cm counts to the closest box side).
+BLIND_STOP = 45.0
 SEE_DIST = 160.0                        # from this gap on the camera should see the target
 KEEP_AWAY = 100.0                       # min distance of our path to a non-target landmark centre
 OBST_HALF = 12.0                        # marker face -> obstacle box centre [cm] (Box_Shift, Ex4)
@@ -335,7 +340,7 @@ def detour(x, y, gx, gy, target):
     dx, dy = gx - x, gy - y
     length = max(np.hypot(dx, dy), 1e-9)
     best = None
-    for lx, ly, keep in things:
+    for j, (lx, ly, keep) in enumerate(things):
         t = ((lx - x) * dx + (ly - y) * dy) / length ** 2
         # behind us, beyond the goal, or we are already at the closest point (just left it) -> no problem
         if t >= 1 or t * length < 40:
@@ -345,7 +350,13 @@ def detour(x, y, gx, gy, target):
         if off < keep and (best is None or t < best[0]):
             nx, ny = (cx - lx, cy - ly) if off > 1 else (-dy, dx)   # push out on the side we already pass
             n = np.hypot(nx, ny)
-            best = (t, (lx + (keep + 20) * nx / n, ly + (keep + 20) * ny / n))
+            # If that waypoint lies in another box's zone, the gap between the two is too narrow:
+            # go around the other side instead (else we zigzag between the two boxes).
+            for side in (1, -1):
+                wx, wy = lx + side * (keep + 20) * nx / n, ly + side * (keep + 20) * ny / n
+                if all(np.hypot(wx - ox, wy - oy) >= k for i, (ox, oy, k) in enumerate(things) if i != j):
+                    break
+            best = (t, (wx, wy))
     return None if best is None else best[1]
 
 
@@ -359,15 +370,15 @@ def approach(target, lms):
     d = np.hypot(ax, ay) - ROBOT_FRONT                     # camera -> marker after the turn
     if d <= BLIND_DIST:
         # Final stretch: closer than ~90 cm the camera loses the marker, so drive
-        # without re-checking it. The front sonar should do the stopping (330 mm),
-        # but it misses boxes approached at an angle (sound reflects away), so the
-        # time-based distance must be right as well (-> calib).
-        remaining = max(d - VISIT_DIST, 0.0)
+        # without re-checking it, only to BLIND_STOP (see there). The front sonar misses
+        # boxes approached at an angle (sound reflects away), so we only creep closer
+        # if the sonar really sees the box (plausible reading, i.e. head-on).
+        remaining = max(d - BLIND_STOP, 0.0)
         driven, aborted = drive(remaining, sonar_limit=330)
         if aborted and remaining - driven > 15.0:      # sonar glitch far from the box -> try the rest once
             drive(remaining - driven, sonar_limit=330)
         gap = snap_to(target)
-        if gap > 38:                                   # stopped short -> creep closer
+        if 35 < gap < 80:                              # sonar sees the box, still a bit far -> creep closer
             drive(gap - VISIT_DIST, sonar_limit=330)
             gap = snap_to(target)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
