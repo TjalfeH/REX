@@ -346,7 +346,7 @@ def remember(obs):
         obstacles[key] = (ox, oy)
         obstacles_version += 1
         last_rrt_path = []
-            _cached_path = None
+        _cached_path = None
 
 
 def sense():
