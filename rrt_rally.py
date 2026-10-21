@@ -504,6 +504,7 @@ def detour(x, y, gx, gy, target):
     last_rrt_path = path if path and len(path) > 2 else []
     if path is None or len(path) <= 2:
         _cached_path = None
+        last_rrt_path = [(x, y), (gx, gy)]  # show direct line on the map
         return None                         # direct path clear, or planning failed -> go direct
     _cached_path = (target, obstacles_version, path)
     _cached_wp_idx = 1
@@ -580,6 +581,9 @@ def go_to(target):
                     if drive(min(STEP, np.hypot(wp[0] - x, wp[1] - y)))[1]:
                         avoid()
                     continue
+            if localised():
+                x, y, _ = pose()
+                last_rrt_path = [(x, y), (gx, gy)]
             if approach(target, lms):
                 return True
             continue
