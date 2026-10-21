@@ -570,13 +570,22 @@ def go_to(target):
     last_rrt_path = []
     _cached_path = None
     _cached_wp_idx = 1
+    confused_count = 0
     for _ in range(60):
         lms, obs = sense()
         # obstacle box straight ahead (camera) -> evade first
         if any(d < 60 and abs(a) < np.radians(25) for d, a in obs.values()):
             avoid(); continue
-        if target not in lms and not localised():
-            lms = relocalise(target)
+        if not localised():
+            confused_count += 1
+            if confused_count >= 3:
+                print("confused -> relocalising")
+                lms = relocalise(target)
+                confused_count = 0
+            elif target not in lms:
+                lms = relocalise(target)
+        else:
+            confused_count = 0
         gx, gy = LANDMARKS[target]
         if target in lms:
             # Always run RRT when localised to avoid obstacles on the way
@@ -659,11 +668,16 @@ def main():
             break
     # A ring around L1 has no useful mean -> scan until a second landmark fixes our side.
     relocalise(L2)
-    for target in ROUTE[1:]:
+    for i, target in enumerate(ROUTE[1:]):
         # If a leg fails the clock keeps running, so do not stop: a missed landmark
         # costs 14 min, but the following landmarks can still count.
         if not go_to(target):
             print("could not reach %s - continuing" % NAME[target])
+        # relocalise after each visit to keep the particle filter accurate
+        next_target = ROUTE[i + 2] if i + 2 < len(ROUTE) else None
+        if next_target is not None:
+            print("relocalising before heading to %s" % NAME[next_target])
+            relocalise(next_target)
     print("done - all landmarks visited")
 
 
