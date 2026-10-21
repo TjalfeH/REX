@@ -39,7 +39,7 @@ BOX_HALF = 20.0                         # half landmark box side [cm]
 # 300 x 400 cm are measured between the INNER box sides -> add one full box width
 # to get centre-to-centre distances (the filter works with box centres).
 INNER_H, INNER_W = 300.0, 400.0         # L1-L2 (vertical) and L2-L4 (horizontal) [cm]
-L1, L2, L3, L4 = 5, 1, 3, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
+L1, L2, L3, L4 = 5, 1, 6, 10            # PRACTICE track IDs. Race day: 1, 2, 3, 4 !
 ROBOT_FRONT = 20.0                      # wheel-axle centre -> camera / front sonar [cm] (MEASURE!)
 
 _W, _H = INNER_W + 2 * BOX_HALF, INNER_H + 2 * BOX_HALF
