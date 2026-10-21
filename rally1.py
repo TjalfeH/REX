@@ -56,7 +56,7 @@ LANDMARKS = {L1: (0.0, 0.0), L2: (0.0, _H), L3: (_W, 0.0), L4: (_W, _H)}
 ROUTE = [L1, L2, L3, L4, L1]            # required order
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
-VISIT_DIST = 30.0                       # stop distance front -> box side (< 40 cm rule)
+VISIT_DIST = 25.0                       # stop distance front -> box side (< 40 cm rule)
 BLIND_DIST = 130.0                      # below this the last stretch is driven without camera
 SEE_DIST = 160.0                        # from this gap on the camera should see the target
 KEEP_AWAY = 100.0                       # min distance of our path to a non-target landmark centre
