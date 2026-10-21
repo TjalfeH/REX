@@ -64,8 +64,9 @@ SIGMA_A = np.radians(10.0)              # bearing noise (distance noise grows wi
 arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 particles = []
-obstacles = {}                          # obstacle id -> (x, y) world position, remembered
+obstacles = {}                          # unique key -> (x, y) world position, remembered
 obstacles_version = 0                   # bumped when obstacle map changes
+OBST_MERGE_DIST = 60.0                  # same-ID sightings closer than this merge [cm]
 odo_ratios = []                         # measured (camera distance change) / (commanded drive)
 last_step = None                        # (target, camera dist, commanded drive, drive count) of the last approach step
 n_drives = 0                            # counts drive() calls, so we know if anything moved in between
@@ -339,17 +340,25 @@ def remember(obs):
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
         if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
             continue                    # outside the track square -> not a race obstacle
-        changed = False
-        if i in obstacles:              # average with earlier sightings
-            old_x, old_y = obstacles[i]
+        # find closest existing entry with the same ArUco ID
+        best_key, best_dist = None, OBST_MERGE_DIST
+        for key, (ex, ey) in obstacles.items():
+            if not key.startswith("%d_" % i):
+                continue
+            dd = np.hypot(ox - ex, oy - ey)
+            if dd < best_dist:
+                best_key, best_dist = key, dd
+        if best_key is not None:        # merge with nearby same-ID obstacle
+            old_x, old_y = obstacles[best_key]
             ox, oy = 0.5 * (ox + old_x), 0.5 * (oy + old_y)
             if np.hypot(ox - old_x, oy - old_y) > 10.0:
-                changed = True
-        else:
-            print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
-            changed = True
-        obstacles[i] = (ox, oy)
-        if changed:
+                obstacles_version += 1
+            obstacles[best_key] = (ox, oy)
+        else:                           # new obstacle (or same ID far away = second box)
+            seq = sum(1 for k in obstacles if k.startswith("%d_" % i))
+            key = "%d_%d" % (i, seq)
+            print("obstacle %s at (%.0f, %.0f)" % (key, ox, oy))
+            obstacles[key] = (ox, oy)
             obstacles_version += 1
 
 
