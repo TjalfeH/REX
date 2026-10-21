@@ -64,9 +64,8 @@ SIGMA_A = np.radians(10.0)              # bearing noise (distance noise grows wi
 arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 particles = []
-obstacles = {}                          # unique key -> (x, y) world position, remembered
+obstacles = {}                          # obstacle id -> (x, y) world position, remembered
 obstacles_version = 0                   # bumped when obstacle map changes
-OBST_MERGE_DIST = 60.0                  # same-ID sightings closer than this merge [cm]
 odo_ratios = []                         # measured (camera distance change) / (commanded drive)
 last_step = None                        # (target, camera dist, commanded drive, drive count) of the last approach step
 n_drives = 0                            # counts drive() calls, so we know if anything moved in between
@@ -340,13 +339,20 @@ def remember(obs):
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
         if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
             continue                    # outside the track square -> not a race obstacle
-        # store every sighting as a separate obstacle point, never merge
-        key = "%d_%d" % (i, len(obstacles))
-        print("obstacle %s at (%.0f, %.0f)" % (key, ox, oy))
-        obstacles[key] = (ox, oy)
-        obstacles_version += 1
-        last_rrt_path = []
-        _cached_path = None
+        changed = False
+        if i in obstacles:              # average with earlier sightings
+            old_x, old_y = obstacles[i]
+            ox, oy = 0.5 * (ox + old_x), 0.5 * (oy + old_y)
+            if np.hypot(ox - old_x, oy - old_y) > 10.0:
+                changed = True
+        else:
+            print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
+            changed = True
+        obstacles[i] = (ox, oy)
+        if changed:
+            obstacles_version += 1
+            last_rrt_path = []
+            _cached_path = None
 
 
 def sense():
