@@ -76,6 +76,25 @@ current_target = None                   # which landmark we are heading to
 ARENA_COLS = 88                         # characters wide (x axis)
 ARENA_ROWS = 40                         # characters tall (y axis, bottom = row 0)
 ARENA_PAD = 80.0                        # cm padding around the track
+_ARENA_LINES = ARENA_ROWS + 2           # header + grid rows + separator
+
+
+def init_arena():
+    """Set up a scroll region below the arena so logs don't overwrite it."""
+    rows = os.get_terminal_size().lines
+    # clear screen, reserve top _ARENA_LINES rows for the arena
+    sys.stdout.write('\033[2J\033[H')                         # clear + home
+    sys.stdout.write('\033[%d;%dr' % (_ARENA_LINES + 1, rows))  # scroll region
+    sys.stdout.write('\033[%d;1H' % (_ARENA_LINES + 1))         # cursor to log area
+    sys.stdout.flush()
+
+
+def cleanup_arena():
+    """Reset scroll region on exit."""
+    rows = os.get_terminal_size().lines
+    sys.stdout.write('\033[1;%dr' % rows)                     # full scroll region
+    sys.stdout.write('\033[%d;1H' % rows)                     # cursor to bottom
+    sys.stdout.flush()
 
 def _world_to_cell(wx, wy):
     """Map world cm to (col, row) in the grid. Row 0 = bottom of arena."""
@@ -144,15 +163,19 @@ def draw_arena():
         idx = int(round(th / (np.pi / 2))) % 4
         grid[r][c] = (arrows[idx], '1;37')
 
-    # render top to bottom
-    out = ['\033[2J\033[H']     # clear screen, cursor home
+    # render top to bottom, overwriting in place (cursor home, no clear)
+    arena_height = ARENA_ROWS + 2          # rows + header + blank
+    out = ['\033[s']                       # save cursor position
+    out.append('\033[H')                   # move cursor to top-left
     out.append('  ARENA  (green=visited, cyan=target, red=obstacle, magenta=path)\n')
     for r in range(ARENA_ROWS - 1, -1, -1):
         row_str = ''
         for c in range(ARENA_COLS):
             ch, col = grid[r][c]
             row_str += '\033[%sm%s\033[0m' % (col, ch)
-        out.append(row_str + '\n')
+        out.append(row_str + '\033[K\n')   # clear to end of line
+    out.append('\033[K\n')                 # blank separator line
+    out.append('\033[u')                   # restore cursor position
     sys.stdout.write(''.join(out))
     sys.stdout.flush()
 
@@ -541,6 +564,7 @@ def go_to(target):
 
 
 def main():
+    init_arena()
     print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
     # Start: turn until L1 is in view, approach it on the camera (= first visit).
     # The visit seeds the particles on a ring around L1 at the sonar distance.
@@ -572,5 +596,6 @@ def calibrate():
 try:
     calibrate() if "calib" in sys.argv[1:] else main()
 finally:
+    cleanup_arena()
     arlo.stop()
     cam.terminateCaptureThread()
