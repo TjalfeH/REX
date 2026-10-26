@@ -129,16 +129,22 @@ def drive(dist, sonar_limit=SONAR_STOP, sides=True):
 
 
 def avoid():
-    """Turn 60 deg towards the freer side; move 35 cm only if camera and map say it is free."""
+    """Turn 60 deg to the freer side and move 35 cm. Not free -> try the other side,
+    neither free -> back up. So we always move instead of turning back and forth."""
     l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
-    turn(np.radians(60) if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else np.radians(-60))
-    _, obs = sense()
-    if not blocked(obs, 35.0 + ROBOT_RADIUS, 0.0) and free_dist(35.0) >= 35.0:
-        drive(35.0)
+    a = 60 if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else -60
+    for ang in (a, -2 * a):
+        turn(np.radians(ang))
+        _, obs = sense()
+        if not blocked(obs, 35.0 + ROBOT_RADIUS, 0.0) and free_dist(35.0) >= 35.0:
+            drive(35.0); return
+    turn(np.radians(a))                 # back to the original heading
+    back_up(25.0)
 
 
 def back_up(dist):
-    """Reverse up to `dist` cm, keeping 20 cm to whatever is behind. Start only (no particles)."""
+    """Reverse up to `dist` cm, keeping 20 cm to whatever is behind. Moves the particles too."""
+    global moved
     s = arlo.read_back_ping_sensor()
     if s > 0:
         dist = min(dist, s / 10.0 - 20.0)
@@ -153,7 +159,13 @@ def back_up(dist):
         if 0 < b < 200:
             break
         time.sleep(0.05)
+    elapsed = time.time() - t0
     arlo.stop(); time.sleep(0.3)
+    driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
+    moved = True
+    for p in particles:
+        particle.move_particle(p, -driven, 0.0)
+    particle.add_uncertainty(particles, 2.0 + 0.05 * driven, np.radians(3))
 
 
 def free_dist(dist):
@@ -165,8 +177,11 @@ def free_dist(dist):
     for ox, oy in obstacles.values():
         ahead = (ox - x) * ux + (oy - y) * uy           # along our heading
         side = abs((oy - y) * ux - (ox - x) * uy)       # across it
-        if ahead > 0 and side < CLEAR:
-            dist = min(dist, ahead - np.sqrt(CLEAR ** 2 - side ** 2))
+        # Already inside CLEAR (e.g. after an evasion): we may pass, but get at most 10 cm
+        # closer and never closer than 5 cm to touching - else we could never drive away.
+        keep = min(CLEAR, max(np.hypot(ox - x, oy - y) - 10.0, OBST_RADIUS + ROBOT_RADIUS + 5.0))
+        if ahead > 0 and side < keep:
+            dist = min(dist, ahead - np.sqrt(keep ** 2 - side ** 2))
     return dist
 
 
@@ -352,12 +367,12 @@ def blocked(obs, d_t, a_t):
 
 
 # ---- race ----------------------------------------------------------------------
-def scan(target, steps=FULL_SCAN):
-    """Turn and look after each step; stop early facing `target` if seen."""
+def scan(target, steps=FULL_SCAN, until_localised=False):
+    """Turn and look after each step; stop early facing `target` if seen (or once localised)."""
     for s in steps:
         turn(np.radians(s))
         lms, _ = sense()
-        if target in lms:
+        if target in lms or (until_localised and localised()):
             return lms
     return {}
 
@@ -365,7 +380,7 @@ def scan(target, steps=FULL_SCAN):
 def relocalise(target):
     """Scan until localised. Returns the landmarks if the target showed up."""
     for _ in range(3):
-        lms = scan(target)
+        lms = scan(target, until_localised=True)
         if target in lms or localised():
             return lms
         print("not localised yet -> move a bit and scan again")
