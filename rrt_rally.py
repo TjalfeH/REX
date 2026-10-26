@@ -47,7 +47,9 @@ OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 STEP = 50.0                             # step when target not in view [cm]
 BACK_DIST = 50.0                        # back up at start if L1 not visible [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
-SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
+SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
+SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0   # turns + slow drives (last stretch to a box)
+FAST_SPEED, FAST_CM_PER_SEC = 90, 65.0  # normal drives. 65 is a GUESS (46 * 90/64) - run calib!
 T_START = 0.15                          # start-up time of a drive [s]
 N = 1000                                # particles
 SIGMA_A = np.radians(10.0)              # bearing noise
@@ -96,22 +98,31 @@ def turn(angle):
     particle.add_uncertainty(particles, 2.0, np.radians(3) + 0.1 * abs(angle))
 
 
-def drive(dist, sonar_limit=SONAR_STOP):
-    """Drive forward [cm], abort on front sonar < sonar_limit. Returns (driven, aborted)."""
+def drive(dist, sonar_limit=SONAR_STOP, sides=True, fast=True):
+    """Drive forward [cm], abort on front sonar < sonar_limit or (sides) a side sonar < SIDE_STOP.
+    fast=False for the last stretch to a box: less roll-out after a sonar stop.
+    Returns (driven, aborted)."""
     global moved
     if dist <= 0:
         return 0.0, False
     moved = True
-    t0, aborted = time.time(), False
-    arlo.go_diff(SPEED, SPEED + 2, 1, 1)
-    while time.time() - t0 < dist / CM_PER_SEC + T_START:
+    speed, cm_per_sec = (FAST_SPEED, FAST_CM_PER_SEC) if fast else (SPEED, CM_PER_SEC)
+    t0, aborted, k = time.time(), False, 0
+    arlo.go_diff(speed, speed + 2, 1, 1)
+    while time.time() - t0 < dist / cm_per_sec + T_START:
         s = arlo.read_front_ping_sensor()
         if 0 < s < sonar_limit:
             aborted = True; break
+        if sides:                       # one side per loop, so the front check stays fast
+            s = arlo.read_left_ping_sensor() if k % 2 == 0 else arlo.read_right_ping_sensor()
+            k += 1
+            if 0 < s < SIDE_STOP:
+                print("side sonar %d mm -> emergency stop" % s)
+                aborted = True; break
         time.sleep(0.05)
     elapsed = time.time() - t0
     arlo.stop(); time.sleep(0.3)
-    driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
+    driven = min(dist, max(0.0, elapsed - T_START) * cm_per_sec)
     for p in particles:
         particle.move_particle(p, driven, 0.0)
     particle.add_uncertainty(particles, 2.0 + 0.05 * driven, np.radians(3))
@@ -182,7 +193,7 @@ def close_in():
         if gap <= VISIT_DIST + BRAKE:
             break
         # at most 3 cm past VISIT_DIST if the echo drops out
-        drive(gap - VISIT_DIST + 3.0, sonar_limit=int((VISIT_DIST + BRAKE) * 10))
+        drive(gap - VISIT_DIST + 3.0, sonar_limit=int((VISIT_DIST + BRAKE) * 10), sides=False, fast=False)
         s = front_sonar()
         if not (0 < s < limit * 10):
             return VISIT_DIST
@@ -413,9 +424,9 @@ def approach(target, lms):
     d = np.hypot(ax, ay) - ROBOT_FRONT
     if d <= BLIND_DIST:                 # camera loses the marker below ~90 cm -> blind, then sonar
         remaining = max(d - BLIND_STOP, 0.0)
-        driven, aborted = drive(remaining, sonar_limit=330)
+        driven, aborted = drive(remaining, sonar_limit=330, fast=False)
         if aborted and remaining - driven > 15.0:          # sonar glitch -> try the rest once
-            drive(remaining - driven, sonar_limit=330)
+            drive(remaining - driven, sonar_limit=330, fast=False)
         gap = close_in()
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
@@ -503,14 +514,17 @@ def main():
 
 
 def calibrate():
-    """12 x 30 deg = one full turn; 30 cm short by x -> T_START += x / CM_PER_SEC; 100 cm exact."""
+    """12 x 30 deg = one full turn; 30 cm short by x -> T_START += x / CM_PER_SEC; 100 cm exact.
+    Fast 100 cm drove y cm -> FAST_CM_PER_SEC *= y / 100."""
     print("12 x 30 deg left -> robot must end up facing exactly the same way")
     for _ in range(12):
         turn(np.radians(30))
-    input("Enter -> drive 30 cm (no sonar stop), then measure")
-    drive(30.0, sonar_limit=0)
-    input("Enter -> drive 100 cm (no sonar stop), then measure")
-    drive(100.0, sonar_limit=0)
+    input("Enter -> drive 30 cm slow (no sonar stop), then measure")
+    drive(30.0, sonar_limit=0, sides=False, fast=False)
+    input("Enter -> drive 100 cm slow (no sonar stop), then measure")
+    drive(100.0, sonar_limit=0, sides=False, fast=False)
+    input("Enter -> drive 100 cm FAST (no sonar stop), then measure")
+    drive(100.0, sonar_limit=0, sides=False)
 
 
 try:
