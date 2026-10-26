@@ -45,7 +45,7 @@ OBST_HALF = 12.0                        # marker face -> obstacle centre [cm]
 OBST_RADIUS = 17.5                      # obstacle radius [cm]
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 CLEAR = OBST_RADIUS + ROBOT_RADIUS + 15.0     # min path -> obstacle centre while driving [cm]
-STEP = 50.0                             # step when target not in view [cm]
+STEP = 80.0                             # step when target not in view [cm]
 BACK_DIST = 50.0                        # back up at start if L1 not found in a full turn [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
@@ -56,7 +56,8 @@ T_START = 0.15                          # start-up time of a drive [s]
 SETTLE = 0.3                            # robot standing still before a camera frame [s]
 STOP_PAUSE = 0.1                        # pause after every move; the rest of SETTLE only before sense
 FLUSH_FRAMES = 2                        # old frames (camera buffer) thrown away before measuring
-N = 1000                                # particles
+FRAMES = 2                              # frames averaged per look
+N = 500                                 # particles
 SIGMA_A = np.radians(10.0)              # bearing noise
 LOC_STD = 50.0                          # localised: particle std in x and y below this [cm] - see run.log
 
@@ -72,6 +73,7 @@ particles = []
 obstacles = {}                          # id -> (x, y) world position
 obst_w = {}                             # id -> weight of that position (sum of 1/distance)
 moved = True                            # moved since last filter update?
+last_view = None                        # result of the last sense(); None once we move
 lost_count = 0                          # updates in a row where no particle fit
 T0 = time.time()                        # run start (log time stamps)
 stats = {"sense": 0.0, "turn": 0.0, "drive": 0.0, "pause": 0.0, "n_sense": 0}
@@ -105,11 +107,11 @@ def front_sonar():
 # ---- motion ------------------------------------------------------------------
 def turn(angle):
     """Turn in place [rad], positive = left. Moves the particles too."""
-    global moved
+    global moved, last_view
     deg = np.degrees(angle)
     if abs(deg) < 2:
         return
-    moved = True
+    moved, last_view = True, None
     arlo.go_diff(SPEED, SPEED, 0, 1) if deg > 0 else arlo.go_diff(SPEED, SPEED, 1, 0)
     time.sleep(abs(deg) / DEG_PER_SEC)
     stats["turn"] += abs(deg) / DEG_PER_SEC
@@ -122,10 +124,10 @@ def turn(angle):
 def drive(dist, sonar_limit=SONAR_STOP, sides=True, fast=False):
     """Drive forward [cm], abort on front sonar < sonar_limit or (sides) a side sonar < SIDE_STOP.
     fast: FAST speed (long free drives). Returns (driven, aborted)."""
-    global moved
+    global moved, last_view
     if dist <= 0:
         return 0.0, False
-    moved = True
+    moved, last_view = True, None
     speed, cps = (FAST, FAST_CM_PER_SEC) if fast else (SPEED, CM_PER_SEC)
     t0, aborted, k = time.time(), False, 0
     arlo.go_diff(speed, speed + 2, 1, 1)
@@ -168,7 +170,7 @@ def avoid(goal=None):
 
 def back_up(dist):
     """Reverse up to `dist` cm, keeping 20 cm to whatever is behind. Moves the particles too."""
-    global moved
+    global moved, last_view
     s = arlo.read_back_ping_sensor()
     if s > 0:
         dist = min(dist, s / 10.0 - 20.0)
@@ -187,7 +189,7 @@ def back_up(dist):
     stats["drive"] += elapsed
     arlo.stop(); settle(STOP_PAUSE)
     driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
-    moved = True
+    moved, last_view = True, None
     for p in particles:
         particle.move_particle(p, -driven, 0.0)
     particle.add_uncertainty(particles, 2.0 + 0.05 * driven, np.radians(3))
@@ -335,7 +337,7 @@ def localised():
 
 def snap_to(lm_id, gap):
     """We face lm_id at `gap` cm (front sonar -> box side): move all particles there."""
-    global moved
+    global moved, last_view
     if not particles:                   # first visit: ring, a scan decides the side
         set_particles(*ring(lm_id, gap + SONAR_FRONT - ROBOT_FRONT, 0.0))
     else:
@@ -344,7 +346,7 @@ def snap_to(lm_id, gap):
         r = gap + BOX_HALF + SONAR_FRONT
         lx, ly = LANDMARKS[lm_id]
         set_particles(lx - r * np.cos(ths), ly - r * np.sin(ths), ths)
-    moved = True
+    moved, last_view = True, None
 
 
 def remember(obs):
@@ -370,12 +372,15 @@ def remember(obs):
 
 
 def sense():
-    """3 frames, averaged per ID; updates the filter. Returns (landmarks, obstacles)."""
+    """FRAMES frames, averaged per ID; updates the filter. Returns (landmarks, obstacles)."""
+    global last_view
+    if last_view is not None:           # not moved since the last look -> same picture, reuse it
+        return last_view
     if moved:
         settle(SETTLE - STOP_PAUSE)     # camera needs a still robot, the rest of SETTLE
     t0 = time.time()
     raw = {}
-    for k in range(FLUSH_FRAMES + 3):   # first frames may still show the view from before the move
+    for k in range(FLUSH_FRAMES + FRAMES):   # first frames may still show the view before the move
         try:
             frame = cam.get_next_frame()
             if k < FLUSH_FRAMES or frame is None:
@@ -400,6 +405,7 @@ def sense():
     remember(obs)
     stats["sense"] += time.time() - t0
     stats["n_sense"] += 1
+    last_view = lms, obs
     return lms, obs
 
 
@@ -479,7 +485,7 @@ def approach(target, lms):
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
-    dist = free_dist(min(d - BLIND_DIST + 10.0, 80.0))     # stop inside BLIND_DIST, not at obstacles
+    dist = free_dist(min(d - BLIND_DIST + 10.0, 120.0))    # stop inside BLIND_DIST, not at obstacles
     if dist < 10 or drive(dist, fast=True)[1]:
         avoid(LANDMARKS[target])
     return False
