@@ -51,6 +51,7 @@ SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
 T_START = 0.15                          # start-up time of a drive [s]
+SETTLE = 0.3                            # pause after every move [s]
 N = 1000                                # particles
 SIGMA_A = np.radians(10.0)              # bearing noise
 
@@ -67,6 +68,19 @@ obstacles = {}                          # id -> (x, y) world position
 obst_w = {}                             # id -> weight of that position (sum of 1/distance)
 moved = True                            # moved since last filter update?
 lost_count = 0                          # updates in a row where no particle fit
+T0 = time.time()                        # run start (log time stamps)
+stats = {"sense": 0.0, "turn": 0.0, "drive": 0.0, "pause": 0.0, "n_sense": 0}
+
+_print = print
+def print(*args, **kw):
+    """Every log line gets the seconds since start: [  12.3] ..."""
+    kw.setdefault("flush", True)        # show live through `| tee run.log`
+    _print("[%6.1f]" % (time.time() - T0), *args, **kw)
+
+
+def settle():
+    time.sleep(SETTLE)
+    stats["pause"] += SETTLE
 
 
 def wrap(a):
@@ -93,7 +107,8 @@ def turn(angle):
     moved = True
     arlo.go_diff(SPEED, SPEED, 0, 1) if deg > 0 else arlo.go_diff(SPEED, SPEED, 1, 0)
     time.sleep(abs(deg) / DEG_PER_SEC)
-    arlo.stop(); time.sleep(0.3)
+    stats["turn"] += abs(deg) / DEG_PER_SEC
+    arlo.stop(); settle()
     for p in particles:
         particle.move_particle(p, 0.0, angle)
     particle.add_uncertainty(particles, 2.0, np.radians(3) + 0.1 * abs(angle))
@@ -120,7 +135,8 @@ def drive(dist, sonar_limit=SONAR_STOP, sides=True):
                 aborted = True; break
         time.sleep(0.05)
     elapsed = time.time() - t0
-    arlo.stop(); time.sleep(0.3)
+    stats["drive"] += elapsed
+    arlo.stop(); settle()
     driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
     for p in particles:
         particle.move_particle(p, driven, 0.0)
@@ -160,7 +176,8 @@ def back_up(dist):
             break
         time.sleep(0.05)
     elapsed = time.time() - t0
-    arlo.stop(); time.sleep(0.3)
+    stats["drive"] += elapsed
+    arlo.stop(); settle()
     driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
     moved = True
     for p in particles:
@@ -342,6 +359,7 @@ def remember(obs):
 
 def sense():
     """3 frames, averaged per ID; updates the filter. Returns (landmarks, obstacles)."""
+    t0 = time.time()
     raw = {}
     for _ in range(3):
         ids, ds, angs = cam.detect_aruco_objects(cam.get_next_frame())
@@ -357,6 +375,8 @@ def sense():
     obs = {i: m for i, m in seen.items() if i not in LANDMARKS}
     filter_update(lms)
     remember(obs)
+    stats["sense"] += time.time() - t0
+    stats["n_sense"] += 1
     return lms, obs
 
 
@@ -524,12 +544,21 @@ def visit_l1():
 
 def main():
     print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
+    t = time.time()
     visit_l1()                          # seeds the particles on a ring around L1
     relocalise(L2)                      # a 2nd landmark fixes our side
-    for target in ROUTE[1:]:
+    legs = [("start->L1", time.time() - t)]
+    for prev, target in zip(ROUTE, ROUTE[1:]):
+        t = time.time()
         if not go_to(target):           # keep going: later landmarks still count
             print("could not reach %s - continuing" % NAME[target])
+        legs.append(("%s->%s" % (NAME[prev], NAME[target]), time.time() - t))
     print("done - all landmarks visited")
+    print("legs:  " + ", ".join("%s %.0f s" % lt for lt in legs))
+    total = time.time() - T0
+    print("time:  total %.0f s | sense %.0f s (%d x) | turn %.0f s | drive %.0f s | pause %.0f s | rest %.0f s"
+          % (total, stats["sense"], stats["n_sense"], stats["turn"], stats["drive"], stats["pause"],
+             total - stats["sense"] - stats["turn"] - stats["drive"] - stats["pause"]))
 
 
 def calibrate():
