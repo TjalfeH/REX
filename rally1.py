@@ -48,6 +48,7 @@ CLEAR = OBST_RADIUS + ROBOT_RADIUS + 15.0     # min path -> obstacle centre whil
 STEP = 50.0                             # step when target not in view [cm]
 BACK_DIST = 50.0                        # back up at start if L1 not found in a full turn [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
+SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
 T_START = 0.15                          # start-up time of a drive [s]
 N = 1000                                # particles
@@ -98,18 +99,25 @@ def turn(angle):
     particle.add_uncertainty(particles, 2.0, np.radians(3) + 0.1 * abs(angle))
 
 
-def drive(dist, sonar_limit=SONAR_STOP):
-    """Drive forward [cm], abort on front sonar < sonar_limit. Returns (driven, aborted)."""
+def drive(dist, sonar_limit=SONAR_STOP, sides=True):
+    """Drive forward [cm], abort on front sonar < sonar_limit or (sides) a side sonar < SIDE_STOP.
+    Returns (driven, aborted)."""
     global moved
     if dist <= 0:
         return 0.0, False
     moved = True
-    t0, aborted = time.time(), False
+    t0, aborted, k = time.time(), False, 0
     arlo.go_diff(SPEED, SPEED + 2, 1, 1)
     while time.time() - t0 < dist / CM_PER_SEC + T_START:
         s = arlo.read_front_ping_sensor()
         if 0 < s < sonar_limit:
             aborted = True; break
+        if sides:                       # one side per loop, so the front check stays fast
+            s = arlo.read_left_ping_sensor() if k % 2 == 0 else arlo.read_right_ping_sensor()
+            k += 1
+            if 0 < s < SIDE_STOP:
+                print("side sonar %d mm -> emergency stop" % s)
+                aborted = True; break
         time.sleep(0.05)
     elapsed = time.time() - t0
     arlo.stop(); time.sleep(0.3)
@@ -205,7 +213,7 @@ def close_in():
         if gap <= VISIT_DIST + BRAKE:
             break
         # at most 3 cm past VISIT_DIST if the echo drops out
-        drive(gap - VISIT_DIST + 3.0, sonar_limit=int((VISIT_DIST + BRAKE) * 10))
+        drive(gap - VISIT_DIST + 3.0, sonar_limit=int((VISIT_DIST + BRAKE) * 10), sides=False)
         s = front_sonar()
         if not (0 < s < limit * 10):
             return VISIT_DIST
@@ -366,7 +374,8 @@ def relocalise(target):
 
 
 def detour(x, y, gx, gy, target):
-    """Waypoint beside the first landmark/obstacle the straight line passes too closely."""
+    """Waypoint beside the first landmark/obstacle the straight line passes too closely.
+    Takes the side with the shorter total path; a side inside another box's zone only if both are."""
     things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
     things += [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
     dx, dy = gx - x, gy - y
@@ -379,14 +388,19 @@ def detour(x, y, gx, gy, target):
         cx, cy = x + t * dx, y + t * dy
         off = np.hypot(cx - lx, cy - ly)
         if off < keep and (best is None or t < best[0]):
-            nx, ny = (cx - lx, cy - ly) if off > 1 else (-dy, dx)
-            n = np.hypot(nx, ny)
-            for side in (1, -1):        # other side if the gap to another box is too narrow
-                wx, wy = lx + side * (keep + 20) * nx / n, ly + side * (keep + 20) * ny / n
-                if all(np.hypot(wx - ox, wy - oy) >= k for i, (ox, oy, k) in enumerate(things) if i != j):
-                    break
-            best = (t, (wx, wy))
-    return None if best is None else best[1]
+            best = (t, j, (cx - lx, cy - ly) if off > 1 else (-dy, dx))
+    if best is None:
+        return None
+    _, j, (nx, ny) = best
+    lx, ly, keep = things[j]
+    n = np.hypot(nx, ny)
+    options = []
+    for side in (1, -1):
+        wx, wy = lx + side * (keep + 20) * nx / n, ly + side * (keep + 20) * ny / n
+        free = all(np.hypot(wx - ox, wy - oy) >= k for i, (ox, oy, k) in enumerate(things) if i != j)
+        path = np.hypot(wx - x, wy - y) + np.hypot(gx - wx, gy - wy)
+        options.append((not free, path, (wx, wy)))   # free sides first, then the shorter one
+    return min(options)[2]
 
 
 def approach(target, lms):
@@ -509,9 +523,9 @@ def calibrate():
     for _ in range(12):
         turn(np.radians(30))
     input("Enter -> drive 30 cm (no sonar stop), then measure")
-    drive(30.0, sonar_limit=0)
+    drive(30.0, sonar_limit=0, sides=False)
     input("Enter -> drive 100 cm (no sonar stop), then measure")
-    drive(100.0, sonar_limit=0)
+    drive(100.0, sonar_limit=0, sides=False)
 
 
 try:
