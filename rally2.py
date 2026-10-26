@@ -45,7 +45,8 @@ OBST_HALF = 12.0                        # marker face -> obstacle centre [cm]
 OBST_RADIUS = 17.5                      # obstacle radius [cm]
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 CLEAR = OBST_RADIUS + ROBOT_RADIUS + 15.0     # min path -> obstacle centre while driving [cm]
-STEP = 80.0                             # step when target not in view [cm]
+STEP = 140.0                            # step when target not in view [cm] (was 80: fewer stop-turn-look cycles)
+REUSE_TURN = np.radians(20)             # step_to: turn smaller than this -> reuse the last picture, no new look
 BACK_DIST = 50.0                        # back up at start if L1 not found in a full turn [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
@@ -56,12 +57,13 @@ T_START = 0.15                          # start-up time of a drive [s]
 SETTLE = 0.3                            # robot standing still before a camera frame [s]
 STOP_PAUSE = 0.1                        # pause after every move; the rest of SETTLE only before sense
 FLUSH_FRAMES = 2                        # old frames (camera buffer) thrown away before measuring
-FRAMES = 2                              # frames averaged per look
+FRAMES = 1                              # frames per look (was 2: one ArUco detection less per look)
 N = 500                                 # particles
 SIGMA_A = np.radians(10.0)              # bearing noise
 LOC_STD = 50.0                          # localised: particle std in x and y below this [cm] - see run.log
 
-FULL_SCAN = [0] + [-45] * 7             # look all around [deg]; camera sees 2*arctan(820/1315) = 64 deg
+FULL_SCAN = [0] + [-55] * 6             # look all around [deg]; camera sees 2*arctan(820/1315) = 64 deg,
+                                        # so 55 deg steps still overlap 9 deg (was 45: one look less per scan)
 AHEAD_SCAN = [0, -45, 90]               # 0, -45, +45
 SONAR_SWEEP = [-15, -15, 45, 15]        # sonar at -15, -30, +15, +30
 
@@ -76,7 +78,7 @@ moved = True                            # moved since last filter update?
 last_view = None                        # result of the last sense(); None once we move
 lost_count = 0                          # updates in a row where no particle fit
 T0 = time.time()                        # run start (log time stamps)
-stats = {"sense": 0.0, "turn": 0.0, "drive": 0.0, "pause": 0.0, "n_sense": 0}
+stats = {"sense": 0.0, "turn": 0.0, "drive": 0.0, "pause": 0.0, "n_sense": 0, "n_reused": 0}
 
 _print = print
 def print(*args, **kw):
@@ -213,10 +215,18 @@ def free_dist(dist):
 
 
 def step_to(point, dist):
-    """Turn towards world point (x, y), LOOK, then drive `dist` cm - only as far as it is free."""
+    """Turn towards world point (x, y), LOOK, then drive `dist` cm - only as far as it is free.
+    Small turn: the last picture (64 deg wide) already showed the new direction -> reuse it
+    with the bearings shifted by the turn instead of standing still for a new look."""
     x, y, th = pose()
-    turn(wrap(np.arctan2(point[1] - y, point[0] - x) - th))
-    _, obs = sense()                    # camera check in the new direction before driving
+    ang = wrap(np.arctan2(point[1] - y, point[0] - x) - th)
+    old = last_view                     # picture from before the turn (None if we moved since)
+    turn(ang)
+    if old is not None and abs(ang) < REUSE_TURN:
+        obs = {i: (d, wrap(a - ang)) for i, (d, a) in old[1].items()}
+        stats["n_reused"] += 1
+    else:
+        _, obs = sense()                # camera check in the new direction before driving
     dist = min(dist, free_dist(dist))
     if dist < 10 or blocked(obs, dist + ROBOT_RADIUS, 0.0):
         print("path not free -> evade")
@@ -643,9 +653,9 @@ def main():
     print("done - all landmarks visited")
     print("legs:  " + ", ".join("%s %.0f s" % lt for lt in legs))
     total = time.time() - T0
-    print("time:  total %.0f s | sense %.0f s (%d x) | turn %.0f s | drive %.0f s | pause %.0f s | rest %.0f s"
-          % (total, stats["sense"], stats["n_sense"], stats["turn"], stats["drive"], stats["pause"],
-             total - stats["sense"] - stats["turn"] - stats["drive"] - stats["pause"]))
+    print("time:  total %.0f s | sense %.0f s (%d x, %d reused) | turn %.0f s | drive %.0f s | pause %.0f s | rest %.0f s"
+          % (total, stats["sense"], stats["n_sense"], stats["n_reused"], stats["turn"], stats["drive"],
+             stats["pause"], total - stats["sense"] - stats["turn"] - stats["drive"] - stats["pause"]))
 
 
 try:
