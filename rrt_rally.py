@@ -64,9 +64,8 @@ SIGMA_A = np.radians(10.0)              # bearing noise (distance noise grows wi
 arlo = robot.Robot()
 cam = camera.Camera(0, robottype='arlo', useCaptureThread=False)
 particles = []
-obstacles = {}                          # unique key -> (x, y) world position, remembered
+obstacles = {}                          # obstacle id -> (x, y) world position, remembered
 obstacles_version = 0                   # bumped when obstacle map changes
-OBST_MERGE_DIST = 60.0                  # same-ID sightings closer than this merge [cm]
 odo_ratios = []                         # measured (camera distance change) / (commanded drive)
 last_step = None                        # (target, camera dist, commanded drive, drive count) of the last approach step
 n_drives = 0                            # counts drive() calls, so we know if anything moved in between
@@ -340,13 +339,20 @@ def remember(obs):
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
         if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
             continue                    # outside the track square -> not a race obstacle
-        # store every sighting as a separate obstacle point, never merge
-        key = "%d_%d" % (i, len(obstacles))
-        print("obstacle %s at (%.0f, %.0f)" % (key, ox, oy))
-        obstacles[key] = (ox, oy)
-        obstacles_version += 1
-        last_rrt_path = []
-        _cached_path = None
+        changed = False
+        if i in obstacles:              # average with earlier sightings
+            old_x, old_y = obstacles[i]
+            ox, oy = 0.5 * (ox + old_x), 0.5 * (oy + old_y)
+            if np.hypot(ox - old_x, oy - old_y) > 10.0:
+                changed = True
+        else:
+            print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
+            changed = True
+        obstacles[i] = (ox, oy)
+        if changed:
+            obstacles_version += 1
+            last_rrt_path = []
+            _cached_path = None
 
 
 def sense():
@@ -570,13 +576,22 @@ def go_to(target):
     last_rrt_path = []
     _cached_path = None
     _cached_wp_idx = 1
+    confused_count = 0
     for _ in range(60):
         lms, obs = sense()
         # obstacle box straight ahead (camera) -> evade first
         if any(d < 60 and abs(a) < np.radians(25) for d, a in obs.values()):
             avoid(); continue
-        if target not in lms and not localised():
-            lms = relocalise(target)
+        if not localised():
+            confused_count += 1
+            if confused_count >= 3:
+                print("confused -> relocalising")
+                lms = relocalise(target)
+                confused_count = 0
+            elif target not in lms:
+                lms = relocalise(target)
+        else:
+            confused_count = 0
         gx, gy = LANDMARKS[target]
         if target in lms:
             # Always run RRT when localised to avoid obstacles on the way
@@ -659,11 +674,16 @@ def main():
             break
     # A ring around L1 has no useful mean -> scan until a second landmark fixes our side.
     relocalise(L2)
-    for target in ROUTE[1:]:
+    for i, target in enumerate(ROUTE[1:]):
         # If a leg fails the clock keeps running, so do not stop: a missed landmark
         # costs 14 min, but the following landmarks can still count.
         if not go_to(target):
             print("could not reach %s - continuing" % NAME[target])
+        # relocalise after each visit to keep the particle filter accurate
+        next_target = ROUTE[i + 2] if i + 2 < len(ROUTE) else None
+        if next_target is not None:
+            print("relocalising before heading to %s" % NAME[next_target])
+            relocalise(next_target)
     print("done - all landmarks visited")
 
 
