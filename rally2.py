@@ -37,7 +37,7 @@ VISIT_MAX = 35.0                        # front sonar gap that already counts as
 SONAR_MATCH = 30.0                      # camera blind near target: |sonar - expected gap| below this [cm]
 BRAKE = 9.0                             # roll-out after sonar stop [cm] (test run: 18 -> ~9 cm)
 BLIND_DIST = 130.0                      # closer than this: no more camera checks
-BLIND_STOP = 45.0                       # blind stretch ends at this camera -> marker distance
+BLIND_STOP = 35.0                       # blind stretch ends at this camera -> marker distance
 BLIND_GAP = BLIND_STOP - (SONAR_FRONT - ROBOT_FRONT)   # expected sonar gap after it
 SEE_DIST = 160.0                        # camera should see the target from here
 KEEP_AWAY = 100.0                       # path -> non-target landmark centre [cm]
@@ -483,9 +483,11 @@ def approach(target, lms):
         if aborted and remaining - driven > 15.0:          # sonar glitch -> try the rest once
             drive(remaining - driven, sonar_limit=330)
         gap = close_in()
-        if gap is None:                 # camera saw the marker, sonar misses the (diagonal) box
-            print("no echo -> staying at the blind stop (~%.0f cm, still < 40)" % BLIND_GAP)
-            gap = BLIND_GAP
+        if gap is None:                 # no echo: probably not facing the box -> re-aim on the camera
+            gap = camera_close_in(target)
+        if gap is None:                 # never count a visit we are not sure about
+            print("%s: no echo and marker not in view -> back up and try again" % NAME[target])
+            back_up(30.0); return False
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
@@ -493,6 +495,24 @@ def approach(target, lms):
     if dist < 10 or drive(dist, fast=True)[1]:
         avoid(LANDMARKS[target])
     return False
+
+
+def camera_close_in(target):
+    """Sonar found no box: face the marker on the camera, then sonar again, or drive on the
+    camera distance. Returns final sonar gap [cm], None if the marker is not in view."""
+    lms, _ = sense()
+    if target not in lms:
+        return None
+    d, a = lms[target]
+    ax, ay = ROBOT_FRONT + d * np.cos(a), d * np.sin(a)    # marker seen from the axle
+    turn(np.arctan2(ay, ax))
+    print("no echo -> re-aimed on the camera (%s at %.0f cm, %.0f deg)" % (NAME[target], d, np.degrees(a)))
+    gap = close_in()
+    if gap is None:                     # sonar still blind: trust the camera distance
+        cam_gap = np.hypot(ax, ay) - SONAR_FRONT        # sonar -> box side
+        drive(cam_gap - VISIT_DIST, sonar_limit=int((VISIT_DIST + BRAKE) * 10), sides=False)
+        gap = VISIT_DIST
+    return gap
 
 
 def sonar_near(target):
