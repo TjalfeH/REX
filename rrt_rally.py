@@ -45,6 +45,10 @@ OBST_HALF = 12.0                        # marker face -> obstacle centre [cm]
 OBST_RADIUS = 17.5                      # obstacle radius [cm]
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 STEP = 50.0                             # step when target not in view [cm]
+CAREFUL_DIST = 150.0                    # this close to a box / obstacle centre: slow, short steps [cm]
+CAREFUL_STEP = 30.0                     # step there, so the sonars can react in time [cm]
+SEARCH_R = 170.0                        # search circle radius around the target's map position [cm]
+SEARCH_PTS = 8                          # look-points on the circle (45 deg apart)
 BACK_DIST = 50.0                        # back up at start if L1 not visible [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
@@ -133,7 +137,7 @@ def avoid():
     """Turn 60 deg towards the freer side and move a bit."""
     l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
     turn(np.radians(60) if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else np.radians(-60))
-    drive(35.0)
+    drive(35.0, fast=False)             # something is close by -> slow
 
 
 def back_up(dist):
@@ -155,11 +159,22 @@ def back_up(dist):
     arlo.stop(); time.sleep(0.3)
 
 
+def near_box(x, y):
+    """Distance from (x, y) to the closest landmark or remembered obstacle centre [cm]."""
+    return min(np.hypot(x - px, y - py) for px, py in list(LANDMARKS.values()) + list(obstacles.values()))
+
+
 def step_to(point, dist):
-    """Turn towards world point (x, y), drive `dist` cm, evade if blocked."""
+    """Turn towards world point (x, y), drive `dist` cm, evade if blocked.
+    Near a box (anywhere on the way) only a short, slow step, so the sonars can stop us in time."""
     x, y, th = pose()
-    turn(wrap(np.arctan2(point[1] - y, point[0] - x) - th))
-    if drive(dist)[1]:
+    h = np.arctan2(point[1] - y, point[0] - x)
+    turn(wrap(h - th))
+    careful = min(near_box(x + t * dist * np.cos(h), y + t * dist * np.sin(h))
+                  for t in np.linspace(0, 1, 5)) < CAREFUL_DIST
+    if careful:
+        dist = min(dist, CAREFUL_STEP)
+    if drive(dist, fast=not careful)[1]:
         avoid()
 
 
@@ -360,10 +375,14 @@ def zones(x, y, gx, gy, target):
     Right after a visit we stand ~70 cm from that box, inside its KEEP_AWAY circle. A circle that
     already contains us (or the goal) shrinks to just inside that point: we may drive out of it,
     but not deeper in. Otherwise the start is always 'in collision' and every plan fails."""
-    things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
-    things += [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
     return [(cx, cy, min(keep, np.hypot(x - cx, y - cy) - 5, np.hypot(gx - cx, gy - cy) - 5))
-            for cx, cy, keep in things]
+            for cx, cy, keep in keep_out(target)]
+
+
+def keep_out(target):
+    """Circles (cx, cy, keep) to stay out of: other landmarks and remembered obstacles."""
+    things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
+    return things + [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
 
 
 def free(p, q, things):
@@ -431,9 +450,41 @@ def approach(target, lms):
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
-    if drive(min(d - BLIND_DIST + 10.0, 80.0))[1]:          # stop inside BLIND_DIST
+    if drive(min(d - BLIND_DIST + 10.0, 80.0), fast=d > CAREFUL_DIST)[1]:   # stop inside BLIND_DIST
         avoid()
     return False
+
+
+def circle_search(target):
+    """Target should be in view but is not (hidden / estimate off): drive around its map position
+    on a circle. At each look-point face the centre and look left and right.
+    Returns the landmarks as soon as the target is seen, else {}."""
+    gx, gy = LANDMARKS[target]
+    x, y, _ = pose()
+    a0 = np.arctan2(y - gy, x - gx)     # start at the circle point closest to us
+    for k in range(SEARCH_PTS):
+        a = a0 + k * 2 * np.pi / SEARCH_PTS
+        px, py = gx + SEARCH_R * np.cos(a), gy + SEARCH_R * np.sin(a)
+        if not (-60 < px < _W + 60 and -60 < py < _H + 60):
+            continue                    # outside the track
+        if any(np.hypot(px - cx, py - cy) < keep for cx, cy, keep in keep_out(target)):
+            continue                    # too close to another box
+        print("search %s: look-point %d/%d at (%.0f, %.0f)" % (NAME[target], k + 1, SEARCH_PTS, px, py))
+        for _ in range(8):              # move there (around obstacles), looking after every step
+            x, y, _ = pose()
+            if np.hypot(px - x, py - y) < 15:
+                break
+            wp = detour(x, y, px, py, target) or (px, py)
+            step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
+            lms, _ = sense()
+            if target in lms:
+                return lms
+        x, y, th = pose()
+        turn(wrap(np.arctan2(gy - y, gx - x) - th))    # face where we think it is
+        lms = scan(target, AHEAD_SCAN)
+        if target in lms:
+            return lms
+    return {}
 
 
 def go_to(target):
@@ -470,10 +521,8 @@ def go_to(target):
             turn(wrap(np.arctan2(gy - y, gx - x) - th))
             if target in scan(target, AHEAD_SCAN):
                 continue
-            print("%s not visible -> moving closer" % NAME[target])
-            if gap > BLIND_DIST:
-                step_to((gx, gy), min(STEP, gap - BLIND_DIST + 10))
-            else:
+            print("%s not visible -> circle search around its map position" % NAME[target])
+            if not circle_search(target):
                 particle.add_uncertainty(particles, 80.0, np.radians(30))   # lost -> relocalise
             continue
         wp = detour(x, y, gx, gy, target)
