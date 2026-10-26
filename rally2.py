@@ -239,7 +239,7 @@ def find_box_echo(max_cm):
 
 
 def close_in():
-    """Creep on the front sonar until VISIT_DIST. Returns final gap [cm]."""
+    """Creep on the front sonar until VISIT_DIST. Returns final gap [cm], None if no box echo."""
     limit = BLIND_GAP + 25.0            # echo further away = not our box
     s = front_sonar()
     gap = s / 10.0 if 0 < s < limit * 10 else None
@@ -247,8 +247,7 @@ def close_in():
         print("front sonar sees no box (diagonal?) -> sonar sweep")
         gap = find_box_echo(limit)
     if gap is None:
-        print("no echo -> staying at the blind stop (~%.0f cm, still < 40)" % BLIND_GAP)
-        return BLIND_GAP
+        return None                     # caller decides: camera saw it -> blind stop counts, else not
     for _ in range(2):                  # 2nd try only after a sonar glitch
         if gap <= VISIT_DIST + BRAKE:
             break
@@ -474,6 +473,9 @@ def approach(target, lms):
         if aborted and remaining - driven > 15.0:          # sonar glitch -> try the rest once
             drive(remaining - driven, sonar_limit=330)
         gap = close_in()
+        if gap is None:                 # camera saw the marker, sonar misses the (diagonal) box
+            print("no echo -> staying at the blind stop (~%.0f cm, still < 40)" % BLIND_GAP)
+            gap = BLIND_GAP
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
@@ -484,16 +486,27 @@ def approach(target, lms):
 
 
 def sonar_near(target):
-    """Pose says target is too close for the camera: face it; echo fits the expected gap -> visit."""
+    """Pose says target is too close for the camera: face it; echo fits the expected gap -> visit.
+    Echo much closer -> something is in the way: evade. Otherwise we are lost -> relocalise."""
     gx, gy = LANDMARKS[target]
     x, y, th = pose()
     turn(wrap(np.arctan2(gy - y, gx - x) - th))
     expected = np.hypot(gx - x, gy - y) - BOX_HALF - SONAR_FRONT     # sonar -> box side
+    _, obs = sense()
     s = front_sonar() / 10.0
+    if blocked(obs, expected + 40.0, 0.0) or 0 < s < expected - SONAR_MATCH:
+        print("echo %.0f cm, %s expected at %.0f cm, obstacles in view %s -> something in the way, evade"
+              % (s, NAME[target], expected, list(obs)))
+        avoid((gx, gy)); return False
     if not (0 < s and abs(s - expected) < SONAR_MATCH):
-        print("sonar %.0f cm, expected %.0f cm -> relocalise" % (s, expected)); return False
+        print("sonar %.0f cm, expected %.0f cm -> relocalise" % (s, expected))
+        particle.add_uncertainty(particles, 80.0, np.radians(30)); return False
     drive(max(s - BLIND_GAP, 0.0), sonar_limit=330)    # close_in only looks ~60 cm far
-    snap_to(target, close_in())
+    g = close_in()
+    if g is None:                       # no camera proof here, so no echo = not visited
+        print("no echo after driving -> %s is not here, relocalise" % NAME[target])
+        particle.add_uncertainty(particles, 80.0, np.radians(30)); return False
+    snap_to(target, g)
     print("%s visited on sonar (expected %.0f cm, sonar said %.0f cm)" % (NAME[target], expected, s))
     return True
 
@@ -528,19 +541,20 @@ def go_to(target):
         gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT
         print("pose x=%.0f y=%.0f th=%.0f deg | spread %.0f/%.0f cm, heading %.2f | %s gap %.0f cm"
               % ((x, y, np.degrees(th)) + spread() + (NAME[target], gap)))
-        if gap < SEE_DIST:              # should be visible: face it and look around
+        wp = detour(x, y, gx, gy, target)           # also near the target: a box may hide it
+        if wp is None and gap < SEE_DIST:           # should be visible: face it and look around
             turn(wrap(np.arctan2(gy - y, gx - x) - th))
             if target in scan(target, AHEAD_SCAN):
                 continue
-            print("%s not visible -> moving closer" % NAME[target])
-            if gap > BLIND_DIST:
-                step_to((gx, gy), min(STEP, gap - BLIND_DIST + 10))
-            elif sonar_near(target):
-                return True
-            else:
-                particle.add_uncertainty(particles, 80.0, np.radians(30))   # lost -> relocalise
-            continue
-        wp = detour(x, y, gx, gy, target)
+            x, y, _ = pose()
+            wp = detour(x, y, gx, gy, target)       # the scan may just have found the hiding box
+            if wp is None:
+                print("%s not visible -> moving closer" % NAME[target])
+                if gap > BLIND_DIST:
+                    step_to((gx, gy), min(STEP, gap - BLIND_DIST + 10))
+                elif sonar_near(target):
+                    return True
+                continue
         if wp is not None:
             print("detour via (%.0f, %.0f)" % wp)
             step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
