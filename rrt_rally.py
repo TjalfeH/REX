@@ -47,8 +47,6 @@ OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 STEP = 50.0                             # step when target not in view [cm]
 CAREFUL_DIST = 150.0                    # this close to a box / obstacle centre: slow, short steps [cm]
 CAREFUL_STEP = 30.0                     # step there, so the sonars can react in time [cm]
-SEARCH_R = 170.0                        # search circle radius around the target's map position [cm]
-SEARCH_PTS = 8                          # look-points on the circle (45 deg apart)
 BACK_DIST = 50.0                        # back up at start if L1 not visible [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
@@ -375,14 +373,10 @@ def zones(x, y, gx, gy, target):
     Right after a visit we stand ~70 cm from that box, inside its KEEP_AWAY circle. A circle that
     already contains us (or the goal) shrinks to just inside that point: we may drive out of it,
     but not deeper in. Otherwise the start is always 'in collision' and every plan fails."""
-    return [(cx, cy, min(keep, np.hypot(x - cx, y - cy) - 5, np.hypot(gx - cx, gy - cy) - 5))
-            for cx, cy, keep in keep_out(target)]
-
-
-def keep_out(target):
-    """Circles (cx, cy, keep) to stay out of: other landmarks and remembered obstacles."""
     things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
-    return things + [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
+    things += [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
+    return [(cx, cy, min(keep, np.hypot(x - cx, y - cy) - 5, np.hypot(gx - cx, gy - cy) - 5))
+            for cx, cy, keep in things]
 
 
 def free(p, q, things):
@@ -455,38 +449,6 @@ def approach(target, lms):
     return False
 
 
-def circle_search(target):
-    """Target should be in view but is not (hidden / estimate off): drive around its map position
-    on a circle. At each look-point face the centre and look left and right.
-    Returns the landmarks as soon as the target is seen, else {}."""
-    gx, gy = LANDMARKS[target]
-    x, y, _ = pose()
-    a0 = np.arctan2(y - gy, x - gx)     # start at the circle point closest to us
-    for k in range(SEARCH_PTS):
-        a = a0 + k * 2 * np.pi / SEARCH_PTS
-        px, py = gx + SEARCH_R * np.cos(a), gy + SEARCH_R * np.sin(a)
-        if not (-60 < px < _W + 60 and -60 < py < _H + 60):
-            continue                    # outside the track
-        if any(np.hypot(px - cx, py - cy) < keep for cx, cy, keep in keep_out(target)):
-            continue                    # too close to another box
-        print("search %s: look-point %d/%d at (%.0f, %.0f)" % (NAME[target], k + 1, SEARCH_PTS, px, py))
-        for _ in range(8):              # move there (around obstacles), looking after every step
-            x, y, _ = pose()
-            if np.hypot(px - x, py - y) < 15:
-                break
-            wp = detour(x, y, px, py, target) or (px, py)
-            step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
-            lms, _ = sense()
-            if target in lms:
-                return lms
-        x, y, th = pose()
-        turn(wrap(np.arctan2(gy - y, gx - x) - th))    # face where we think it is
-        lms = scan(target, AHEAD_SCAN)
-        if target in lms:
-            return lms
-    return {}
-
-
 def go_to(target):
     """One leg: pose estimate until the camera sees the target, then approach."""
     gx, gy = LANDMARKS[target]
@@ -521,8 +483,10 @@ def go_to(target):
             turn(wrap(np.arctan2(gy - y, gx - x) - th))
             if target in scan(target, AHEAD_SCAN):
                 continue
-            print("%s not visible -> circle search around its map position" % NAME[target])
-            if not circle_search(target):
+            print("%s not visible -> moving closer" % NAME[target])
+            if gap > BLIND_DIST:
+                step_to((gx, gy), min(STEP, gap - BLIND_DIST + 10))
+            else:
                 particle.add_uncertainty(particles, 80.0, np.radians(30))   # lost -> relocalise
             continue
         wp = detour(x, y, gx, gy, target)
