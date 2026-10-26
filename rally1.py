@@ -475,4 +475,4 @@ try:
     calibrate() if "calib" in sys.argv[1:] else main()
 finally:
     arlo.stop()
-    cam.terminateCaptureThread()q
+    cam.terminateCaptureThread()
