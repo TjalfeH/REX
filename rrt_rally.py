@@ -45,8 +45,6 @@ OBST_HALF = 12.0                        # marker face -> obstacle centre [cm]
 OBST_RADIUS = 17.5                      # obstacle radius [cm]
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 STEP = 50.0                             # step when target not in view [cm]
-CAREFUL_DIST = 150.0                    # this close to a box / obstacle centre: slow, short steps [cm]
-CAREFUL_STEP = 30.0                     # step there, so the sonars can react in time [cm]
 BACK_DIST = 50.0                        # back up at start if L1 not visible [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
@@ -135,7 +133,7 @@ def avoid():
     """Turn 60 deg towards the freer side and move a bit."""
     l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
     turn(np.radians(60) if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else np.radians(-60))
-    drive(35.0, fast=False)             # something is close by -> slow
+    drive(35.0)
 
 
 def back_up(dist):
@@ -157,22 +155,11 @@ def back_up(dist):
     arlo.stop(); time.sleep(0.3)
 
 
-def near_box(x, y):
-    """Distance from (x, y) to the closest landmark or remembered obstacle centre [cm]."""
-    return min(np.hypot(x - px, y - py) for px, py in list(LANDMARKS.values()) + list(obstacles.values()))
-
-
 def step_to(point, dist):
-    """Turn towards world point (x, y), drive `dist` cm, evade if blocked.
-    Near a box (anywhere on the way) only a short, slow step, so the sonars can stop us in time."""
+    """Turn towards world point (x, y), drive `dist` cm, evade if blocked."""
     x, y, th = pose()
-    h = np.arctan2(point[1] - y, point[0] - x)
-    turn(wrap(h - th))
-    careful = min(near_box(x + t * dist * np.cos(h), y + t * dist * np.sin(h))
-                  for t in np.linspace(0, 1, 5)) < CAREFUL_DIST
-    if careful:
-        dist = min(dist, CAREFUL_STEP)
-    if drive(dist, fast=not careful)[1]:
+    turn(wrap(np.arctan2(point[1] - y, point[0] - x) - th))
+    if drive(dist)[1]:
         avoid()
 
 
@@ -444,7 +431,7 @@ def approach(target, lms):
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
-    if drive(min(d - BLIND_DIST + 10.0, 80.0), fast=d > CAREFUL_DIST)[1]:   # stop inside BLIND_DIST
+    if drive(min(d - BLIND_DIST + 10.0, 80.0))[1]:          # stop inside BLIND_DIST
         avoid()
     return False
 
