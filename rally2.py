@@ -11,10 +11,9 @@ Particle filter (Ex5) on the 4 corner landmarks. Approach a seen target on the c
 last cm closed loop on the front sonar to VISIT_DIST. Otherwise drive on the pose
 estimate around other landmarks and remembered obstacles.
 
-Race day: landmark IDs 1-4, run `python3 rally.py calib`, measure ROBOT_FRONT and
-SONAR_FRONT, then `python3 rally.py | tee run.log`.
+Race day: landmark IDs 1-4, measure ROBOT_FRONT and SONAR_FRONT,
+then `python3 rally.py | tee run.log`.
 """
-import sys
 import time
 import numpy as np
 import particle, camera, robot
@@ -35,6 +34,7 @@ NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
 VISIT_DIST = 15.0                       # final gap front sonar -> box side [cm] (< 40 rule)
 VISIT_MAX = 35.0                        # front sonar gap that already counts as visited [cm]
+SONAR_MATCH = 30.0                      # camera blind near target: |sonar - expected gap| below this [cm]
 BRAKE = 9.0                             # roll-out after sonar stop [cm] (test run: 18 -> ~9 cm)
 BLIND_DIST = 130.0                      # closer than this: no more camera checks
 BLIND_STOP = 45.0                       # blind stretch ends at this camera -> marker distance
@@ -49,11 +49,14 @@ STEP = 50.0                             # step when target not in view [cm]
 BACK_DIST = 50.0                        # back up at start if L1 not found in a full turn [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
+SIDE_FREE = 600                         # [mm] both sides freer than this -> evade towards the goal
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
 T_START = 0.15                          # start-up time of a drive [s]
 SETTLE = 0.3                            # pause after every move [s]
+FLUSH_FRAMES = 2                        # old frames (camera buffer) thrown away before measuring
 N = 1000                                # particles
 SIGMA_A = np.radians(10.0)              # bearing noise
+LOC_STD = 50.0                          # localised: particle std in x and y below this [cm] - see run.log
 
 FULL_SCAN = [0] + [-30] * 11            # look all around [deg]
 AHEAD_SCAN = [0, -30, -30, 90, 30]      # 0, -30, -60, +30, +60
@@ -144,11 +147,13 @@ def drive(dist, sonar_limit=SONAR_STOP, sides=True):
     return driven, aborted
 
 
-def avoid():
-    """Turn 60 deg to the freer side and move 35 cm. Not free -> try the other side,
-    neither free -> back up. So we always move instead of turning back and forth."""
-    l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
-    a = 60 if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else -60
+def avoid(goal=None):
+    """Turn 60 deg to the freer side (both free and localised: towards `goal`) and move 35 cm.
+    Not free -> try the other side, neither free -> back up. So we always move."""
+    l, r = [s if s > 0 else 9999 for s in (arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor())]
+    a = 60 if l >= r else -60
+    if goal and min(l, r) > SIDE_FREE and localised():
+        x, y, th = pose(); a = 60 if wrap(np.arctan2(goal[1] - y, goal[0] - x) - th) > 0 else -60
     for ang in (a, -2 * a):
         turn(np.radians(ang))
         _, obs = sense()
@@ -210,9 +215,9 @@ def step_to(point, dist):
     dist = min(dist, free_dist(dist))
     if dist < 10 or blocked(obs, dist + ROBOT_RADIUS, 0.0):
         print("path not free -> evade")
-        avoid(); return
+        avoid(point); return
     if drive(dist)[1]:
-        avoid()
+        avoid(point)
 
 
 def find_box_echo(max_cm):
@@ -312,13 +317,18 @@ def pose():
     return e.getX(), e.getY(), e.getTheta()
 
 
+def spread():
+    """std x, std y [cm] and heading agreement (0..1) of the particles."""
+    xs, ys, th = as_arrays()
+    return np.std(xs), np.std(ys), np.hypot(np.mean(np.cos(th)), np.mean(np.sin(th)))
+
+
 def localised():
     """Particles agree on position AND heading (a ring around one landmark does not)."""
     if not particles:
         return False
-    xs, ys, th = as_arrays()
-    heading_agree = np.hypot(np.mean(np.cos(th)), np.mean(np.sin(th)))
-    return np.std(xs) < 50 and np.std(ys) < 50 and heading_agree > 0.9
+    sx, sy, heading_agree = spread()
+    return sx < LOC_STD and sy < LOC_STD and heading_agree > 0.9
 
 
 def snap_to(lm_id, gap):
@@ -361,8 +371,14 @@ def sense():
     """3 frames, averaged per ID; updates the filter. Returns (landmarks, obstacles)."""
     t0 = time.time()
     raw = {}
-    for _ in range(3):
-        ids, ds, angs = cam.detect_aruco_objects(cam.get_next_frame())
+    for k in range(FLUSH_FRAMES + 3):   # first frames may still show the view from before the move
+        try:
+            frame = cam.get_next_frame()
+            if k < FLUSH_FRAMES or frame is None:
+                continue
+            ids, ds, angs = cam.detect_aruco_objects(frame)
+        except Exception as e:          # one broken frame must not end the run
+            print("camera error: %s -> frame skipped" % e); continue
         if ids is not None:
             for i, d, a in zip(ids, ds, angs):
                 if 0 < d < 500:
@@ -453,9 +469,25 @@ def approach(target, lms):
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
-    if drive(min(d - BLIND_DIST + 10.0, 80.0))[1]:          # stop inside BLIND_DIST
-        avoid()
+    dist = free_dist(min(d - BLIND_DIST + 10.0, 80.0))     # stop inside BLIND_DIST, not at obstacles
+    if dist < 10 or drive(dist)[1]:
+        avoid(LANDMARKS[target])
     return False
+
+
+def sonar_near(target):
+    """Pose says target is too close for the camera: face it; echo fits the expected gap -> visit."""
+    gx, gy = LANDMARKS[target]
+    x, y, th = pose()
+    turn(wrap(np.arctan2(gy - y, gx - x) - th))
+    expected = np.hypot(gx - x, gy - y) - BOX_HALF - SONAR_FRONT     # sonar -> box side
+    s = front_sonar() / 10.0
+    if not (0 < s and abs(s - expected) < SONAR_MATCH):
+        print("sonar %.0f cm, expected %.0f cm -> relocalise" % (s, expected)); return False
+    drive(max(s - BLIND_GAP, 0.0), sonar_limit=330)    # close_in only looks ~60 cm far
+    snap_to(target, close_in())
+    print("%s visited on sonar (expected %.0f cm, sonar said %.0f cm)" % (NAME[target], expected, s))
+    return True
 
 
 def go_to(target):
@@ -464,7 +496,7 @@ def go_to(target):
     for _ in range(60):
         lms, obs = sense()
         if blocked(obs, 80.0, 0.0):
-            avoid(); continue
+            avoid((gx, gy)); continue
         if target not in lms and not localised():
             relocalise(target)
             continue
@@ -480,14 +512,14 @@ def go_to(target):
                     continue
             if in_way:                  # sonar would take the obstacle for the target
                 print("obstacle in front of %s -> evade" % NAME[target])
-                avoid(); continue
+                avoid((gx, gy)); continue
             if approach(target, lms):
                 return True
             continue
         x, y, th = pose()
         gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT
-        print("pose x=%.0f y=%.0f th=%.0f deg | %s gap %.0f cm"
-              % (x, y, np.degrees(th), NAME[target], gap))
+        print("pose x=%.0f y=%.0f th=%.0f deg | spread %.0f/%.0f cm, heading %.2f | %s gap %.0f cm"
+              % ((x, y, np.degrees(th)) + spread() + (NAME[target], gap)))
         if gap < SEE_DIST:              # should be visible: face it and look around
             turn(wrap(np.arctan2(gy - y, gx - x) - th))
             if target in scan(target, AHEAD_SCAN):
@@ -495,6 +527,8 @@ def go_to(target):
             print("%s not visible -> moving closer" % NAME[target])
             if gap > BLIND_DIST:
                 step_to((gx, gy), min(STEP, gap - BLIND_DIST + 10))
+            elif sonar_near(target):
+                return True
             else:
                 particle.add_uncertainty(particles, 80.0, np.radians(30))   # lost -> relocalise
             continue
@@ -561,19 +595,8 @@ def main():
              total - stats["sense"] - stats["turn"] - stats["drive"] - stats["pause"]))
 
 
-def calibrate():
-    """12 x 30 deg = one full turn; 30 cm short by x -> T_START += x / CM_PER_SEC; 100 cm exact."""
-    print("12 x 30 deg left -> robot must end up facing exactly the same way")
-    for _ in range(12):
-        turn(np.radians(30))
-    input("Enter -> drive 30 cm (no sonar stop), then measure")
-    drive(30.0, sonar_limit=0, sides=False)
-    input("Enter -> drive 100 cm (no sonar stop), then measure")
-    drive(100.0, sonar_limit=0, sides=False)
-
-
 try:
-    calibrate() if "calib" in sys.argv[1:] else main()
+    main()
 finally:
     arlo.stop()
     cam.terminateCaptureThread()
