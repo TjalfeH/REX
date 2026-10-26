@@ -51,15 +51,17 @@ SONAR_STOP = 450                        # [mm] normal sonar abort
 SIDE_STOP = 120                         # [mm] side sonar emergency stop while driving
 SIDE_FREE = 600                         # [mm] both sides freer than this -> evade towards the goal
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
+FAST, FAST_CM_PER_SEC = 90, 64.0        # long free drives only - MEASURE (64.0 is a guess: 46 * 90/64)
 T_START = 0.15                          # start-up time of a drive [s]
-SETTLE = 0.3                            # pause after every move [s]
+SETTLE = 0.3                            # robot standing still before a camera frame [s]
+STOP_PAUSE = 0.1                        # pause after every move; the rest of SETTLE only before sense
 FLUSH_FRAMES = 2                        # old frames (camera buffer) thrown away before measuring
 N = 1000                                # particles
 SIGMA_A = np.radians(10.0)              # bearing noise
 LOC_STD = 50.0                          # localised: particle std in x and y below this [cm] - see run.log
 
-FULL_SCAN = [0] + [-30] * 11            # look all around [deg]
-AHEAD_SCAN = [0, -30, -30, 90, 30]      # 0, -30, -60, +30, +60
+FULL_SCAN = [0] + [-45] * 7             # look all around [deg]; camera sees 2*arctan(820/1315) = 64 deg
+AHEAD_SCAN = [0, -45, 90]               # 0, -45, +45
 SONAR_SWEEP = [-15, -15, 45, 15]        # sonar at -15, -30, +15, +30
 
 arlo = robot.Robot()
@@ -81,9 +83,9 @@ def print(*args, **kw):
     _print("[%6.1f]" % (time.time() - T0), *args, **kw)
 
 
-def settle():
-    time.sleep(SETTLE)
-    stats["pause"] += SETTLE
+def settle(t):
+    time.sleep(t)
+    stats["pause"] += t
 
 
 def wrap(a):
@@ -111,22 +113,23 @@ def turn(angle):
     arlo.go_diff(SPEED, SPEED, 0, 1) if deg > 0 else arlo.go_diff(SPEED, SPEED, 1, 0)
     time.sleep(abs(deg) / DEG_PER_SEC)
     stats["turn"] += abs(deg) / DEG_PER_SEC
-    arlo.stop(); settle()
+    arlo.stop(); settle(STOP_PAUSE)
     for p in particles:
         particle.move_particle(p, 0.0, angle)
     particle.add_uncertainty(particles, 2.0, np.radians(3) + 0.1 * abs(angle))
 
 
-def drive(dist, sonar_limit=SONAR_STOP, sides=True):
+def drive(dist, sonar_limit=SONAR_STOP, sides=True, fast=False):
     """Drive forward [cm], abort on front sonar < sonar_limit or (sides) a side sonar < SIDE_STOP.
-    Returns (driven, aborted)."""
+    fast: FAST speed (long free drives). Returns (driven, aborted)."""
     global moved
     if dist <= 0:
         return 0.0, False
     moved = True
+    speed, cps = (FAST, FAST_CM_PER_SEC) if fast else (SPEED, CM_PER_SEC)
     t0, aborted, k = time.time(), False, 0
-    arlo.go_diff(SPEED, SPEED + 2, 1, 1)
-    while time.time() - t0 < dist / CM_PER_SEC + T_START:
+    arlo.go_diff(speed, speed + 2, 1, 1)
+    while time.time() - t0 < dist / cps + T_START:
         s = arlo.read_front_ping_sensor()
         if 0 < s < sonar_limit:
             aborted = True; break
@@ -139,8 +142,8 @@ def drive(dist, sonar_limit=SONAR_STOP, sides=True):
         time.sleep(0.05)
     elapsed = time.time() - t0
     stats["drive"] += elapsed
-    arlo.stop(); settle()
-    driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
+    arlo.stop(); settle(STOP_PAUSE)
+    driven = min(dist, max(0.0, elapsed - T_START) * cps)
     for p in particles:
         particle.move_particle(p, driven, 0.0)
     particle.add_uncertainty(particles, 2.0 + 0.05 * driven, np.radians(3))
@@ -182,7 +185,7 @@ def back_up(dist):
         time.sleep(0.05)
     elapsed = time.time() - t0
     stats["drive"] += elapsed
-    arlo.stop(); settle()
+    arlo.stop(); settle(STOP_PAUSE)
     driven = min(dist, max(0.0, elapsed - T_START) * CM_PER_SEC)
     moved = True
     for p in particles:
@@ -216,7 +219,7 @@ def step_to(point, dist):
     if dist < 10 or blocked(obs, dist + ROBOT_RADIUS, 0.0):
         print("path not free -> evade")
         avoid(point); return
-    if drive(dist)[1]:
+    if drive(dist, fast=True)[1]:
         avoid(point)
 
 
@@ -369,6 +372,8 @@ def remember(obs):
 
 def sense():
     """3 frames, averaged per ID; updates the filter. Returns (landmarks, obstacles)."""
+    if moved:
+        settle(SETTLE - STOP_PAUSE)     # camera needs a still robot, the rest of SETTLE
     t0 = time.time()
     raw = {}
     for k in range(FLUSH_FRAMES + 3):   # first frames may still show the view from before the move
@@ -379,10 +384,13 @@ def sense():
             ids, ds, angs = cam.detect_aruco_objects(frame)
         except Exception as e:          # one broken frame must not end the run
             print("camera error: %s -> frame skipped" % e); continue
-        if ids is not None:
-            for i, d, a in zip(ids, ds, angs):
-                if 0 < d < 500:
-                    raw.setdefault(int(i), []).append((float(d), float(a)))
+        if ids is None:
+            if k == FLUSH_FRAMES:       # first real frame shows nothing -> stop looking
+                break
+            continue
+        for i, d, a in zip(ids, ds, angs):
+            if 0 < d < 500:
+                raw.setdefault(int(i), []).append((float(d), float(a)))
     seen = {i: (np.mean([d for d, _ in v]), np.arctan2(np.mean([np.sin(a) for _, a in v]),
                                                          np.mean([np.cos(a) for _, a in v])))
             for i, v in raw.items()}
@@ -470,7 +478,7 @@ def approach(target, lms):
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
     dist = free_dist(min(d - BLIND_DIST + 10.0, 80.0))     # stop inside BLIND_DIST, not at obstacles
-    if dist < 10 or drive(dist)[1]:
+    if dist < 10 or drive(dist, fast=True)[1]:
         avoid(LANDMARKS[target])
     return False
 
