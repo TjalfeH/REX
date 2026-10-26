@@ -468,13 +468,17 @@ def detour(x, y, gx, gy, target):
 
 
 def approach(target, lms):
-    """Target in view: turn to it and drive. Returns True once visited."""
+    """Target in view (go_to checked the path): turn to it and drive. Far away: shortcut straight
+    in one go into BLIND_DIST (one camera re-aim there), close: blind + sonar. True once visited."""
     d, a = lms[target]
     ax, ay = ROBOT_FRONT + d * np.cos(a), d * np.sin(a)    # marker seen from the axle
     turn(np.arctan2(ay, ax))
     d = np.hypot(ax, ay) - ROBOT_FRONT
     if d <= BLIND_DIST:                 # camera loses the marker below ~90 cm -> blind, then sonar
         remaining = max(d - BLIND_STOP, 0.0)
+        if free_dist(remaining) < remaining - 5.0:         # remembered box beside the blind path
+            print("remembered obstacle next to the blind path to %s -> evade" % NAME[target])
+            avoid(LANDMARKS[target]); return False
         driven, aborted = drive(remaining, sonar_limit=330)
         if aborted and remaining - driven > 15.0:          # sonar glitch -> try the rest once
             drive(remaining - driven, sonar_limit=330)
@@ -485,7 +489,7 @@ def approach(target, lms):
         snap_to(target, gap)
         print("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
         return True
-    dist = free_dist(min(d - BLIND_DIST + 10.0, 120.0))    # stop inside BLIND_DIST, not at obstacles
+    dist = free_dist(d - BLIND_DIST + 10.0)                # shortcut: straight into BLIND_DIST
     if dist < 10 or drive(dist, fast=True)[1]:
         avoid(LANDMARKS[target])
     return False
@@ -500,7 +504,8 @@ def sonar_near(target):
     expected = np.hypot(gx - x, gy - y) - BOX_HALF - SONAR_FRONT     # sonar -> box side
     _, obs = sense()
     s = front_sonar() / 10.0
-    if blocked(obs, expected + 40.0, 0.0) or 0 < s < expected - SONAR_MATCH:
+    if (blocked(obs, expected + 40.0, 0.0) or 0 < s < expected - SONAR_MATCH
+            or free_dist(s - BLIND_GAP) < s - BLIND_GAP - 5.0):   # seen, echo or remembered box
         print("echo %.0f cm, %s expected at %.0f cm, obstacles in view %s -> something in the way, evade"
               % (s, NAME[target], expected, list(obs)))
         avoid((gx, gy)); return False
