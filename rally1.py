@@ -35,7 +35,7 @@ NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
 VISIT_DIST = 15.0                       # final gap front sonar -> box side [cm] (< 40 rule)
 VISIT_MAX = 35.0                        # front sonar gap that already counts as visited [cm]
-BRAKE = 3.0                             # roll-out after sonar stop [cm]
+BRAKE = 9.0                             # roll-out after sonar stop [cm] (test run: 18 -> ~9 cm)
 BLIND_DIST = 130.0                      # closer than this: no more camera checks
 BLIND_STOP = 45.0                       # blind stretch ends at this camera -> marker distance
 BLIND_GAP = BLIND_STOP - (SONAR_FRONT - ROBOT_FRONT)   # expected sonar gap after it
@@ -44,6 +44,7 @@ KEEP_AWAY = 100.0                       # path -> non-target landmark centre [cm
 OBST_HALF = 12.0                        # marker face -> obstacle centre [cm]
 OBST_RADIUS = 17.5                      # obstacle radius [cm]
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
+CLEAR = OBST_RADIUS + ROBOT_RADIUS + 15.0     # min path -> obstacle centre while driving [cm]
 STEP = 50.0                             # step when target not in view [cm]
 BACK_DIST = 50.0                        # back up at start if L1 not found in a full turn [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
@@ -62,6 +63,7 @@ cam.intrinsic_matrix = np.array([[CAM_F, 0, 820.0], [0, CAM_F, 616.0], [0, 0, 1]
 cam.arucoMarkerLength = MARKER_SIZE
 particles = []
 obstacles = {}                          # id -> (x, y) world position
+obst_w = {}                             # id -> weight of that position (sum of 1/distance)
 moved = True                            # moved since last filter update?
 lost_count = 0                          # updates in a row where no particle fit
 
@@ -119,10 +121,12 @@ def drive(dist, sonar_limit=SONAR_STOP):
 
 
 def avoid():
-    """Turn 60 deg towards the freer side and move a bit."""
+    """Turn 60 deg towards the freer side; move 35 cm only if camera and map say it is free."""
     l, r = arlo.read_left_ping_sensor(), arlo.read_right_ping_sensor()
     turn(np.radians(60) if (l if l > 0 else 9999) >= (r if r > 0 else 9999) else np.radians(-60))
-    drive(35.0)
+    _, obs = sense()
+    if not blocked(obs, 35.0 + ROBOT_RADIUS, 0.0) and free_dist(35.0) >= 35.0:
+        drive(35.0)
 
 
 def back_up(dist):
@@ -144,10 +148,29 @@ def back_up(dist):
     arlo.stop(); time.sleep(0.3)
 
 
+def free_dist(dist):
+    """How far we can drive straight ahead before getting closer than CLEAR to a remembered obstacle."""
+    if not obstacles or not localised():
+        return dist
+    x, y, th = pose()
+    ux, uy = np.cos(th), np.sin(th)
+    for ox, oy in obstacles.values():
+        ahead = (ox - x) * ux + (oy - y) * uy           # along our heading
+        side = abs((oy - y) * ux - (ox - x) * uy)       # across it
+        if ahead > 0 and side < CLEAR:
+            dist = min(dist, ahead - np.sqrt(CLEAR ** 2 - side ** 2))
+    return dist
+
+
 def step_to(point, dist):
-    """Turn towards world point (x, y), drive `dist` cm, evade if blocked."""
+    """Turn towards world point (x, y), LOOK, then drive `dist` cm - only as far as it is free."""
     x, y, th = pose()
     turn(wrap(np.arctan2(point[1] - y, point[0] - x) - th))
+    _, obs = sense()                    # camera check in the new direction before driving
+    dist = min(dist, free_dist(dist))
+    if dist < 10 or blocked(obs, dist + ROBOT_RADIUS, 0.0):
+        print("path not free -> evade")
+        avoid(); return
     if drive(dist)[1]:
         avoid()
 
@@ -279,17 +302,19 @@ def remember(obs):
     x, y, th = pose()
     cx, cy = cam_pos(x, y, th)
     for i, (d, a) in obs.items():
-        if d > 350:
+        if d > 250:                     # far sightings are too inaccurate
             continue
         r = d + OBST_HALF
         ox, oy = cx + r * np.cos(th + a), cy + r * np.sin(th + a)
         if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):
             continue
+        w = 1.0 / d                     # close sightings count more
         if i in obstacles:
-            ox, oy = 0.5 * (ox + obstacles[i][0]), 0.5 * (oy + obstacles[i][1])
+            (px, py), pw = obstacles[i], obst_w[i]
+            ox, oy, w = (pw * px + w * ox) / (pw + w), (pw * py + w * oy) / (pw + w), pw + w
         else:
             print("obstacle %d at (%.0f, %.0f)" % (i, ox, oy))
-        obstacles[i] = (ox, oy)
+        obstacles[i], obst_w[i] = (ox, oy), w
 
 
 def sense():
@@ -313,8 +338,8 @@ def sense():
 
 
 def blocked(obs, d_t, a_t):
-    """True if a seen obstacle lies on the line to the point (d_t, a_t)."""
-    return any(d * np.cos(a - a_t) < d_t and abs(d * np.sin(a - a_t)) < ROBOT_RADIUS + OBST_RADIUS
+    """True if a seen obstacle (centre) is closer than CLEAR to the line to the point (d_t, a_t)."""
+    return any((d + OBST_HALF) * np.cos(a - a_t) < d_t and abs((d + OBST_HALF) * np.sin(a - a_t)) < CLEAR
                for d, a in obs.values())
 
 
