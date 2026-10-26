@@ -34,6 +34,7 @@ ROUTE = [L1, L2, L3, L4, L1]
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
 VISIT_DIST = 15.0                       # final gap front sonar -> box side [cm] (< 40 rule)
+VISIT_MAX = 35.0                        # front sonar gap that already counts as visited [cm]
 BRAKE = 3.0                             # roll-out after sonar stop [cm]
 BLIND_DIST = 130.0                      # closer than this: no more camera checks
 BLIND_STOP = 45.0                       # blind stretch ends at this camera -> marker distance
@@ -44,7 +45,7 @@ OBST_HALF = 12.0                        # marker face -> obstacle centre [cm]
 OBST_RADIUS = 17.5                      # obstacle radius [cm]
 OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0
 STEP = 50.0                             # step when target not in view [cm]
-BACK_DIST = 50.0                        # back up at start if L1 not visible [cm]
+BACK_DIST = 50.0                        # back up at start if L1 not found in a full turn [cm]
 SONAR_STOP = 450                        # [mm] normal sonar abort
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
 T_START = 0.15                          # start-up time of a drive [s]
@@ -432,28 +433,45 @@ def go_to(target):
     return False
 
 
+def sonar_visit(lm_id):
+    """Camera can't see lm_id: front sonar < VISIT_MAX -> we already stand close enough."""
+    s = front_sonar()
+    if 0 < s < VISIT_MAX * 10:
+        print("%s not in view, but sonar %.0f cm -> visited" % (NAME[lm_id], s / 10.0))
+        snap_to(lm_id, s / 10.0)
+        return True
+    return False
+
+
+def visit_l1():
+    """Start: turn until L1 is seen (camera) or close in front (sonar), visit it."""
+    misses = 0
+    for _ in range(60):
+        lms, obs = sense()
+        if L1 in lms:
+            if blocked(obs, *lms[L1]):
+                avoid(); continue
+            if approach(L1, lms):
+                return
+            continue
+        if sonar_visit(L1):             # too close for the camera -> already visited
+            return
+        misses += 1
+        if misses == 12:                # full turn, nothing: 40-90 cm away? -> back up once
+            print("L1 not found in a full turn -> backing up")
+            back_up(BACK_DIST)
+        elif misses % 12 == 0:
+            print("L1 not found in a full turn -> moving a bit")
+            if drive(60.0)[1]:
+                avoid()
+        else:
+            turn(np.radians(30))
+
+
 def main():
     print("map:", {NAME[i]: p for i, p in LANDMARKS.items()})
-    if L1 not in sense()[0]:            # maybe too close to L1 -> back up
-        print("L1 not in the first image - maybe too close -> backing up")
-        back_up(BACK_DIST)
-    misses = 0
-    for _ in range(60):                 # find L1 and visit it (seeds the particles)
-        lms, obs = sense()
-        if L1 not in lms:
-            misses += 1
-            if misses % 12 == 0:
-                print("L1 not seen in a full turn -> moving a bit")
-                if drive(60.0)[1]:
-                    avoid()
-            else:
-                turn(np.radians(30))
-            continue
-        if blocked(obs, *lms[L1]):
-            avoid(); continue
-        if approach(L1, lms):
-            break
-    relocalise(L2)                      # ring around L1 -> a 2nd landmark fixes our side
+    visit_l1()                          # seeds the particles on a ring around L1
+    relocalise(L2)                      # a 2nd landmark fixes our side
     for target in ROUTE[1:]:
         if not go_to(target):           # keep going: later landmarks still count
             print("could not reach %s - continuing" % NAME[target])
