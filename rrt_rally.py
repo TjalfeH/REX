@@ -469,7 +469,9 @@ def relocalise(target):
 
 RRT_STEP = 10.0                         # tree extend step [cm] - small: the path hugs the obstacles
 RRT_ITER = 3000                         # max tree nodes tried
-RRT_DRIVE = 20.0                        # drive step along an RRT detour [cm] (look + check the path after each)
+RRT_DRIVE = 55.0                        # drive step along an RRT detour [cm] (look + check the path after each)
+RRT_MARGIN = 150.0                      # sample this far outside the landmark rectangle [cm]: > KEEP_AWAY,
+                                        # so detours can also pass obstacles and corners on the outside
 DETOUR_RANGE = 160.0                    # only detour if the straight line is blocked closer than this [cm].
                                         # > STEP, so a straight step never ends inside a keep-out circle
 
@@ -513,7 +515,8 @@ def rrt(start, goal, things):
         if np.random.rand() < 0.1:
             sample = goal
         else:
-            sample = (np.random.uniform(-60, _W + 60), np.random.uniform(-60, _H + 60))
+            sample = (np.random.uniform(-RRT_MARGIN, _W + RRT_MARGIN),
+                      np.random.uniform(-RRT_MARGIN, _H + RRT_MARGIN))
         n = len(nodes)
         i = int(np.argmin(np.hypot(xy[:n, 0] - sample[0], xy[:n, 1] - sample[1])))
         nx, ny = nodes[i]
