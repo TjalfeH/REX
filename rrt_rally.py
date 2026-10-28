@@ -469,7 +469,11 @@ def relocalise(target):
 
 RRT_STEP = 10.0                         # tree extend step [cm] - small: the path hugs the obstacles
 RRT_ITER = 3000                         # max tree nodes tried
-RRT_DRIVE = 20.0                        # drive step along an RRT detour [cm] (look + replan after each)
+RRT_DRIVE = 20.0                        # drive step along an RRT detour [cm] (look + check the path after each)
+DETOUR_RANGE = 160.0                    # only detour if the straight line is blocked closer than this [cm].
+                                        # > STEP, so a straight step never ends inside a keep-out circle
+
+plan = None                             # (target, path) of the RRT detour we are following
 
 
 def zones(x, y, gx, gy, target):
@@ -484,13 +488,20 @@ def zones(x, y, gx, gy, target):
             for cx, cy, keep in things]
 
 
-def free(p, q, things):
-    """True if the straight line p -> q stays out of every circle (checked every 5 cm)."""
-    for t in np.linspace(0, 1, int(np.hypot(q[0] - p[0], q[1] - p[1]) / 5.0) + 2):
+def first_hit(p, q, things):
+    """Distance from p along the line p -> q to the first point inside a circle (checked every
+    5 cm), or None if the line is free."""
+    length = np.hypot(q[0] - p[0], q[1] - p[1])
+    for t in np.linspace(0, 1, int(length / 5.0) + 2):
         px, py = p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])
         if any(np.hypot(px - cx, py - cy) < keep for cx, cy, keep in things):
-            return False
-    return True
+            return t * length
+    return None
+
+
+def free(p, q, things):
+    """True if the straight line p -> q stays out of every circle."""
+    return first_hit(p, q, things) is None
 
 
 def rrt(start, goal, things):
@@ -522,18 +533,39 @@ def rrt(start, goal, things):
     return None
 
 
+def next_waypoint(x, y, path, things):
+    """Furthest point of path we can reach in a straight line (RRT paths zigzag), but only if the
+    path from there on is still free. None if not (new obstacle, or we got pushed off it)."""
+    for j in range(len(path) - 1, 0, -1):
+        if free((x, y), path[j], things):
+            if all(free(path[k], path[k + 1], things) for k in range(j, len(path) - 1)):
+                return path[j]
+            return None
+    return None
+
+
 def detour(x, y, gx, gy, target):
-    """RRT around other landmarks and remembered obstacles. Returns the next waypoint,
-    or None if the straight line to the goal is free (or no path was found)."""
+    """RRT around other landmarks and remembered obstacles. Returns the next waypoint, or None to
+    drive straight: line free, or only blocked further than DETOUR_RANGE away (that box's position
+    is still rough - decide when closer), or no path found.
+    Keeps following one planned path while it stays free, so we don't zigzag between random paths."""
+    global plan
     things = zones(x, y, gx, gy, target)
-    if free((x, y), (gx, gy), things):
+    hit = first_hit((x, y), (gx, gy), things)
+    if hit is None or hit > DETOUR_RANGE:
+        plan = None
         return None
-    path = rrt((x, y), (gx, gy), things)
-    if path is None:
-        print("RRT found no path -> driving straight")
-        return None
-    # RRT paths zigzag: take the furthest path point we can reach in a straight line
-    return next(p for p in reversed(path[1:]) if free((x, y), p, things))
+    wp = next_waypoint(x, y, plan[1], things) if plan and plan[0] == target else None
+    if wp is None:
+        path = rrt((x, y), (gx, gy), things)
+        if path is None:
+            plan = None
+            log("RRT found no path -> driving straight")
+            return None
+        plan = (target, path)
+        log("RRT: new path to %s, blocked %.0f cm ahead" % (NAME[target], hit))
+        wp = next_waypoint(x, y, path, things)
+    return wp
 
 
 def step_detour(target, why):
