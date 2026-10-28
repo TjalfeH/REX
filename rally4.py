@@ -33,6 +33,7 @@ OBST_KEEP = CLEAR                                   # RRT circle, never smaller 
 LM_EXTRA = KEEP_AWAY - CLEAR                        # landmarks get this much more room
 OBST_NEAR, OBST_MAX_SEEN, STEP = 80.0, 250.0, 140.0
 EVADE_TURN, EVADE_DIST, EVADE_BACK, BACK_KEEP = 60.0, 35.0, 25.0, 20.0
+BACK_FIRST, BACK_AFTER = 15.0, 30.0                 # back up after a visit: first landmark, the others
 
 # RRT: step, max nodes, tries, point reached, sample box pad, arena margin, detour range
 RRT_STEP, RRT_ITER, RRT_TRIES, RRT_REACHED, RRT_PAD = 50.0, 3000, 8, 15.0, 200.0
@@ -516,7 +517,6 @@ def approach(target, lms):
         return False
     snap_to(target, gap)
     log("%s visited (camera %.0f cm, now ~%.0f cm)" % (NAME[target], d, gap))
-    back_up(30.0)
     return True
 
 def sonar_near(target):
@@ -536,7 +536,6 @@ def sonar_near(target):
     if s < 40 and expected < 40 + SONAR_MATCH:      # sonar and pose agree: we are there
         snap_to(target, s)
         log("%s visited on sonar (%.0f cm)" % (NAME[target], s))
-        back_up(30.0)
         return True
     if abs(s - expected) >= SONAR_MATCH:
         log("sonar %.0f cm, expected %.0f cm -> relocalise" % (s, expected))
@@ -550,7 +549,6 @@ def sonar_near(target):
         return False
     snap_to(target, g)
     log("%s visited on sonar (%.0f cm)" % (NAME[target], g))
-    back_up(30.0)
     return True
 
 def toward_unseen(target):
@@ -635,15 +633,25 @@ def start_visit():
         P, used = ring(L1, gap + SONAR_FRONT - ROBOT_FRONT, 0.0), {L1}
     snap_to(L1, gap)
     log("L1 visited on sonar (%.0f cm)" % gap)
-    back_up(30.0)
     return True
+
+def look_around():
+    """Full turn after a visit: obstacles around us go into the map, landmarks into the filter."""
+    log("360 deg look for obstacles")
+    cur = 0
+    for a in FULL_SCAN:
+        turn(np.radians(a - cur))
+        cur = a
+        sense()
 
 def main():
     missed = []
     for k, target in enumerate(ROUTE):
-        if k == 0 and start_visit():
-            continue
-        if not go_to(target):
+        if (k == 0 and start_visit()) or go_to(target):
+            back_up(BACK_FIRST if k == 0 else BACK_AFTER)   # room to turn without scraping the box
+            if k < len(ROUTE) - 1:                  # not after the last one: the run is over
+                look_around()
+        else:
             log("could not reach %s - continuing" % NAME[target])
             missed.append(NAME[target])
     log("done - " + ("MISSED: " + ", ".join(missed) if missed else "all landmarks visited"))
