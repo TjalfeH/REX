@@ -37,7 +37,7 @@ ROUTE = [L1, L2, L3, L4, L1]
 NAME = {L1: "L1", L2: "L2", L3: "L3", L4: "L4"}
 
 # final approach
-VISIT_DIST = 15.0                       # final gap front sonar -> box side (< 40 rule)
+VISIT_DIST = 25.0                       # final gap front sonar -> box side (< 40 rule; closer scrapes corners)
 SONAR_MATCH = 30.0                      # camera blind near target: |sonar - expected gap| below this
 BRAKE = 9.0                             # roll-out after sonar stop (test run: 18 -> ~9 cm)
 BLIND_DIST = 130.0                      # closer than this: no more camera checks
@@ -465,9 +465,10 @@ def relocalise(target):
     return {}
 
 
-RRT_STEP = 10.0                         # tree extend step [cm] - small: the path hugs the obstacles
+RRT_STEP = 50.0                         # tree step = drive step along a detour [cm]: the path is cut into
+                                        # pieces of at most this, and we drive to every point (look + check after each)
 RRT_ITER = 3000                         # max tree nodes tried
-RRT_DRIVE = 55.0                        # drive step along an RRT detour [cm] (look + check the path after each)
+RRT_REACHED = 15.0                      # this close to a path point: it counts as reached, on to the next
 RRT_TRIES = 8                           # plan this often, keep the shortest (first path found is often the long way)
 RRT_PAD = 200.0                         # sampling area: box around start and goal + this on every side [cm].
                                         # Centred on the route, not the arena: no side is favoured. Doubled if no path.
@@ -475,7 +476,7 @@ ARENA_OUT = 120.0                       # no part of the robot more than this ou
 DETOUR_RANGE = 160.0                    # only detour if the straight line is blocked closer than this [cm].
                                         # > STEP, so a straight step never ends inside a keep-out circle
 
-plan = None                             # (target, path) of the RRT detour we are following
+plan = None                             # (target, path, i) of the RRT detour we follow; path[i] = next point
 
 
 def zones(x, y, gx, gy, target):
@@ -551,24 +552,33 @@ def shortcut(path, things):
     return out
 
 
+def split(path):
+    """Cut every segment into equal pieces of at most RRT_STEP: one piece = one drive step."""
+    out = [path[0]]
+    for p, q in zip(path, path[1:]):
+        n = int(np.ceil(np.hypot(q[0] - p[0], q[1] - p[1]) / RRT_STEP))
+        out += [(p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n) for k in range(1, n + 1)]
+    return out
+
+
 def rrt(start, goal, things):
-    """Best of RRT_TRIES shortcut RRT paths (shortest), or None. No path: try a wider area."""
+    """Best of RRT_TRIES shortcut RRT paths (shortest), cut into RRT_STEP pieces, or None.
+    No path: try a wider area."""
     length = lambda p: sum(np.hypot(q[0] - r[0], q[1] - r[1]) for q, r in zip(p, p[1:]))
     for pad in (RRT_PAD, 2 * RRT_PAD):
         paths = [shortcut(p, things) for p in (rrt_once(start, goal, things, pad) for _ in range(RRT_TRIES)) if p]
         if paths:
-            return min(paths, key=length)
+            return split(min(paths, key=length))
     return None
 
 
-def next_waypoint(x, y, path, things):
-    """Furthest point of path we can reach in a straight line (RRT paths zigzag), but only if the
-    path from there on is still free. None if not (new obstacle, or we got pushed off it)."""
-    for j in range(len(path) - 1, 0, -1):
-        if free((x, y), path[j], things):
-            if all(free(path[k], path[k + 1], things) for k in range(j, len(path) - 1)):
-                return path[j]
-            return None
+def next_point(x, y, path, i, things):
+    """Index of the path point to drive to next: i, or the one after once i is reached (no point
+    is skipped). None if the way there or the rest of the path is no longer free."""
+    while i < len(path) - 1 and np.hypot(path[i][0] - x, path[i][1] - y) < RRT_REACHED:
+        i += 1
+    if free((x, y), path[i], things) and all(free(path[k], path[k + 1], things) for k in range(i, len(path) - 1)):
+        return i
     return None
 
 
@@ -576,40 +586,41 @@ def detour(x, y, gx, gy, target):
     """RRT around other landmarks and remembered obstacles. Returns the next waypoint, or None to
     drive straight: line free, or only blocked further than DETOUR_RANGE away (that box's position
     is still rough - decide when closer), or no path found.
-    Keeps following one planned path while it stays free, so we don't zigzag between random paths."""
+    Keeps following one planned path, point by point, while it stays free, so we don't zigzag
+    between random paths."""
     global plan
     things = zones(x, y, gx, gy, target)
     hit = first_hit((x, y), (gx, gy), things)
     if hit is None or hit > DETOUR_RANGE:
         plan = None
         return None
-    wp = next_waypoint(x, y, plan[1], things) if plan and plan[0] == target else None
-    if wp is None:
+    path, i = (plan[1], next_point(x, y, plan[1], plan[2], things)) if plan and plan[0] == target else (None, None)
+    if i is None:
         path = rrt((x, y), (gx, gy), things)
-        if path is None:
+        i = None if path is None else next_point(x, y, path, 1, things)
+        if i is None:
             plan = None
             log("RRT found no path -> driving straight")
             return None
-        plan = (target, path)
-        log("RRT: new path to %s, blocked %.0f cm ahead" % (NAME[target], hit))
-        wp = next_waypoint(x, y, path, things)
-    return wp
+        log("RRT: new path to %s (%d steps), blocked %.0f cm ahead" % (NAME[target], len(path) - 1, hit))
+    plan = (target, path, i)
+    return path[i]
 
 
 def step_detour(target, why):
     """Step towards a detour waypoint if the straight line to target needs one. True if stepped."""
     x, y, _ = pose()
     wp = detour(x, y, *LANDMARKS[target], target)
-    if wp is None:
+    if wp is None or np.hypot(wp[0] - x, wp[1] - y) < RRT_REACHED:   # (only the goal left, and we are there)
         return False
     log("%s -> detour via (%.0f, %.0f)" % ((why,) + tuple(wp)))
-    step_to(wp, min(RRT_DRIVE, np.hypot(wp[0] - x, wp[1] - y)))
+    step_to(wp, min(RRT_STEP, np.hypot(wp[0] - x, wp[1] - y)))   # one path piece (pushed off: no more)
     return True
 
 
 def approach(target, lms):
     """Target in view (path checked): turn to it and drive. Far away: shortcut straight into
-    BLIND_DIST (re-aim there). Close: blind + sonar. True once visited."""
+    BLIND_DIST (re-aim there). Close: the rest on the camera distance. True once visited."""
     goal = LANDMARKS[target]
     d = face_marker(*lms[target]) - ROBOT_FRONT
     if d > BLIND_DIST:                  # shortcut: straight into BLIND_DIST
@@ -617,41 +628,39 @@ def approach(target, lms):
         if dist < 10 or drive(dist, fast=True)[1]:
             avoid(goal)
         return False
-    # camera loses the marker below ~90 cm -> blind, then sonar
-    remaining = max(d - BLIND_STOP, 0.0)
-    if free_dist(remaining) < remaining - 5.0:     # remembered box beside the blind path
-        log("remembered obstacle next to the blind path to %s -> evade" % NAME[target])
-        avoid(goal)
+    # Close: drive the rest on the camera distance. The sonar only stops us - it often gets no echo
+    # from a box at an angle, so we never wait for one (that made us drive back and forth).
+    front_gap = d - (SONAR_FRONT - ROBOT_FRONT)         # front of the robot -> box side
+    if front_gap > 70:                                  # long way: errors add up -> stop at ~55 cm and
+        dist = front_gap - 55                           # measure again (the camera still sees it there)
+        if free_dist(dist) < dist - 5.0:
+            log("remembered obstacle next to the path to %s -> evade" % NAME[target])
+            avoid(goal)
+        else:
+            drive(dist, front_stop=VISIT_DIST, sides=False)
         return False
-    driven, aborted = drive(remaining, front_stop=BLIND_SONAR_STOP)
-    if aborted and remaining - driven > 15.0:      # sonar glitch -> try the rest once
-        drive(remaining - driven, front_stop=BLIND_SONAR_STOP)
-    gap = close_in()
-    if gap is None:                     # no echo: probably not facing the box -> re-aim on the camera
-        gap = camera_close_in(target)
-    if gap is None:                     # never count a visit we are not sure about
-        log("%s: no echo and marker not in view -> back up and try again" % NAME[target])
-        back_up(30.0)
+    gap = front_gap
+    if front_gap > VISIT_DIST + 5:
+        dist = front_gap - VISIT_DIST
+        if free_dist(dist) < dist - 5.0:                # remembered box beside the path
+            log("remembered obstacle next to the path to %s -> evade" % NAME[target])
+            avoid(goal)
+            return False
+        driven, _ = drive(dist, front_stop=VISIT_DIST, sides=False)
+        expect = front_gap - driven                 # where the box should be now
+        s = front_sonar()
+        if s < expect - 15:                         # echo much closer than the box: something else in front
+            log("%s: echo %.0f cm, box expected at %.0f cm -> obstacle in front, evade" % (NAME[target], s, expect))
+            avoid(goal)
+            return False
+        gap = s if abs(s - expect) < 15 else expect     # echo only if it fits the camera distance
+    if gap > 38:                        # not within the 40 cm yet (rule): look again, don't claim it
+        log("%s still %.0f cm away -> look again" % (NAME[target], gap))
         return False
     snap_to(target, gap)
-    log("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
+    log("%s visited (camera said %.0f cm, now ~%.0f cm)" % (NAME[target], d, gap))
+    back_up(30.0)                       # room to turn and leave without scraping the box
     return True
-
-
-def camera_close_in(target):
-    """Sonar found no box: face the marker on the camera, then sonar again, or drive on the
-    camera distance. Returns final sonar gap [cm], None if the marker is not in view."""
-    lms, _ = sense()
-    if target not in lms:
-        return None
-    d, a = lms[target]
-    axle = face_marker(d, a)
-    log("no echo -> re-aimed on the camera (%s at %.0f cm, %.0f deg)" % (NAME[target], d, np.degrees(a)))
-    gap = close_in()
-    if gap is None:                     # sonar still blind: trust the camera distance
-        drive(axle - SONAR_FRONT - VISIT_DIST, front_stop=VISIT_DIST + BRAKE, sides=False)
-        gap = VISIT_DIST
-    return gap
 
 
 def sonar_near(target):
@@ -670,6 +679,11 @@ def sonar_near(target):
             % (s, NAME[target], expected, list(obs)))
         avoid((gx, gy))
         return False
+    if s < 40 and expected < 40 + SONAR_MATCH:     # pose and sonar both: we are within 40 cm
+        snap_to(target, s)
+        log("%s visited on sonar (%.0f cm, pose said %.0f cm)" % (NAME[target], s, expected))
+        back_up(30.0)
+        return True
     if not abs(s - expected) < SONAR_MATCH:
         log("sonar %.0f cm, expected %.0f cm -> relocalise" % (s, expected))
         add_noise(80.0, np.radians(30))
@@ -682,6 +696,7 @@ def sonar_near(target):
         return False
     snap_to(target, g)
     log("%s visited on sonar (expected %.0f cm, sonar said %.0f cm)" % (NAME[target], expected, s))
+    back_up(30.0)
     return True
 
 
