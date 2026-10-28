@@ -351,18 +351,20 @@ def relocalise(target):
     return {}
 
 
-RRT_STEP = 30.0                         # tree extend step [cm]
-RRT_ITER = 2000                         # max tree nodes tried
+RRT_STEP = 10.0                         # tree extend step [cm] - small: the path hugs the obstacles
+RRT_ITER = 3000                         # max tree nodes tried
+RRT_DRIVE = 20.0                        # drive step along an RRT detour [cm] (look + replan after each)
 
 
 def zones(x, y, gx, gy, target):
     """Circles (cx, cy, keep) the path must stay out of: other landmarks and remembered obstacles.
     Right after a visit we stand ~70 cm from that box, inside its KEEP_AWAY circle. A circle that
-    already contains us (or the goal) shrinks to just inside that point: we may drive out of it,
-    but not deeper in. Otherwise the start is always 'in collision' and every plan fails."""
+    already contains us (or the goal) shrinks to exactly that point: we may drive out of it,
+    but not deeper in. Otherwise the start is always 'in collision' and every plan fails.
+    (No margin: with one replan per short step, even 5 cm per plan would add up.)"""
     things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
     things += [(ox, oy, OBST_KEEP) for ox, oy in obstacles.values()]
-    return [(cx, cy, min(keep, np.hypot(x - cx, y - cy) - 5, np.hypot(gx - cx, gy - cy) - 5))
+    return [(cx, cy, min(keep, np.hypot(x - cx, y - cy), np.hypot(gx - cx, gy - cy)))
             for cx, cy, keep in things]
 
 
@@ -379,12 +381,14 @@ def rrt(start, goal, things):
     """Plain RRT: grow a tree from start with random samples (10% the goal itself) until a node
     sees the goal. Returns the path start -> goal as a list of points, or None."""
     nodes, parent = [start], [None]
+    xy = np.empty((RRT_ITER + 1, 2)); xy[0] = start     # same nodes as an array: fast nearest search
     for _ in range(RRT_ITER):
         if np.random.rand() < 0.1:
             sample = goal
         else:
             sample = (np.random.uniform(-60, _W + 60), np.random.uniform(-60, _H + 60))
-        i = int(np.argmin([np.hypot(sample[0] - nx, sample[1] - ny) for nx, ny in nodes]))
+        n = len(nodes)
+        i = int(np.argmin(np.hypot(xy[:n, 0] - sample[0], xy[:n, 1] - sample[1])))
         nx, ny = nodes[i]
         d = np.hypot(sample[0] - nx, sample[1] - ny)
         if d < 1e-9:
@@ -393,7 +397,7 @@ def rrt(start, goal, things):
         new = (nx + (sample[0] - nx) / d * s, ny + (sample[1] - ny) / d * s)
         if not free(nodes[i], new, things):
             continue
-        nodes.append(new); parent.append(i)
+        xy[n] = new; nodes.append(new); parent.append(i)
         if free(new, goal, things):     # goal in sight -> walk back to the start
             path, j = [goal], len(nodes) - 1
             while j is not None:
@@ -454,7 +458,7 @@ def go_to(target):
                 wp = detour(x, y, gx, gy, target)
                 if wp is not None:
                     print("target in view, but blocked -> detour via (%.0f, %.0f)" % wp)
-                    step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
+                    step_to(wp, min(RRT_DRIVE, np.hypot(wp[0] - x, wp[1] - y)))
                     continue
             if in_way:                  # sonar would take the obstacle for the target
                 print("obstacle in front of %s -> evade" % NAME[target])
@@ -479,7 +483,7 @@ def go_to(target):
         wp = detour(x, y, gx, gy, target)
         if wp is not None:
             print("detour via (%.0f, %.0f)" % wp)
-            step_to(wp, min(STEP, np.hypot(wp[0] - x, wp[1] - y)))
+            step_to(wp, min(RRT_DRIVE, np.hypot(wp[0] - x, wp[1] - y)))
         else:
             step_to((gx, gy), min(STEP, gap - SEE_DIST + 20))
     return False
