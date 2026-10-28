@@ -1,4 +1,5 @@
-r"""
+"""
+OOOLDDD
 rally.py - DIKU RoboRally 2026 (REX Ex6).
 
     L2 ---- 400 ---- L4      Route: L1 -> L2 -> L3 -> L4 -> L1
