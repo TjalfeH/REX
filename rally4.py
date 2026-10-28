@@ -302,7 +302,8 @@ def remember(obs):
         if d > OBST_MAX_SEEN:
             continue
         ox, oy, w = cx + (d + OBST_HALF) * np.cos(th + a), cy + (d + OBST_HALF) * np.sin(th + a), 1.0 / d
-        if not (-60 < ox < W + 60 and -60 < oy < H + 60):    # outside the arena: wrong reading
+        far = ARENA_OUT + OBST_KEEP                 # further out can't touch a path: wrong reading
+        if not (-far < ox < W + far and -far < oy < H + far):
             continue
         if i in obstacles:
             px, py, pw = obstacles[i]
@@ -376,11 +377,14 @@ def free(p, q, things):
     return first_hit(p, q, things) is None
 
 def rrt_once(start, goal, things, pad):
-    """Plain RRT from start until a node sees the goal. Returns the path or None."""
+    """Plain RRT from start until a node sees the goal. Returns the path or None.
+    Samples only within the bound (robot centre ARENA_OUT - ROBOT_RADIUS outside the arena). A start
+    outside it still works: every step heads for a sample inside, so no node is further out than
+    its parent - the path only leads back in."""
     nodes, parent = [start], [None]
     out = ARENA_OUT - ROBOT_RADIUS
-    lo = np.minimum(np.maximum(np.minimum(start, goal) - pad, (-out, -out)), start)
-    hi = np.maximum(np.minimum(np.maximum(start, goal) + pad, (W + out, H + out)), start)
+    lo = np.maximum(np.minimum(start, goal) - pad, (-out, -out))
+    hi = np.minimum(np.maximum(start, goal) + pad, (W + out, H + out))
     xy = np.empty((RRT_ITER + 1, 2))                # nodes as array for a fast nearest search
     xy[0] = start
     for _ in range(RRT_ITER):
