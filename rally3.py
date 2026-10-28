@@ -51,7 +51,8 @@ NEAR = 60.0                             # closer than this: no detours any more,
 KEEP_AWAY = 100.0                       # path -> other landmark centre (40 cm rule + robot + error)
 OBST_HALF = 12.0                        # marker -> obstacle centre
 OBST_RADIUS = 17.5                      # obstacle radius
-CLEAR = OBST_RADIUS + ROBOT_RADIUS + 25.0       # driving: min distance to an obstacle centre
+CLEAR = OBST_RADIUS + ROBOT_RADIUS + 15.0       # driving: min distance to an obstacle centre
+                                        # (= 15 cm between robot edge and box wall)
 OBST_KEEP = CLEAR                       # RRT: path -> obstacle centre (never below CLEAR, else
                                         # free_dist refuses the paths the RRT plans)
 LM_EXTRA = KEEP_AWAY - CLEAR            # landmarks get this much more room than obstacles
