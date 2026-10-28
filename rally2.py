@@ -531,7 +531,7 @@ def step_detour(target, why):
 
 def approach(target, lms):
     """Target in view (path checked): turn to it and drive. Far away: shortcut straight into
-    BLIND_DIST (re-aim there). Close: blind + sonar. True once visited."""
+    BLIND_DIST (re-aim there). Close: the rest on the camera distance. True once visited."""
     goal = LANDMARKS[target]
     d = face_marker(*lms[target]) - ROBOT_FRONT
     if d > BLIND_DIST:                  # shortcut: straight into BLIND_DIST
@@ -539,42 +539,31 @@ def approach(target, lms):
         if dist < 10 or drive(dist, fast=True)[1]:
             avoid(goal)
         return False
-    # camera loses the marker below ~90 cm -> blind, then sonar
-    remaining = max(d - BLIND_STOP, 0.0)
-    if free_dist(remaining) < remaining - 5.0:     # remembered box beside the blind path
-        log("remembered obstacle next to the blind path to %s -> evade" % NAME[target])
-        avoid(goal)
+    # Close: drive the rest on the camera distance. The sonar only stops us - it often gets no echo
+    # from a box at an angle, so we never wait for one (that made us drive back and forth).
+    front_gap = d - (SONAR_FRONT - ROBOT_FRONT)         # front of the robot -> box side
+    if front_gap > 70:                                  # long way: errors add up -> stop at ~55 cm and
+        dist = front_gap - 55                           # measure again (the camera still sees it there)
+        if free_dist(dist) < dist - 5.0:
+            log("remembered obstacle next to the path to %s -> evade" % NAME[target])
+            avoid(goal)
+        else:
+            drive(dist, front_stop=VISIT_DIST, sides=False)
         return False
-    driven, aborted = drive(remaining, front_stop=BLIND_SONAR_STOP)
-    if aborted and remaining - driven > 15.0:      # sonar glitch -> try the rest once
-        drive(remaining - driven, front_stop=BLIND_SONAR_STOP)
-    gap = close_in()
-    if gap is None:                     # no echo: probably not facing the box -> re-aim on the camera
-        gap = camera_close_in(target)
-    if gap is None:                     # never count a visit we are not sure about
-        log("%s: no echo and marker not in view -> back up and try again" % NAME[target])
-        back_up(30.0)
-        return False
+    gap = front_gap
+    if front_gap > VISIT_DIST + 5:
+        dist = front_gap - VISIT_DIST
+        if free_dist(dist) < dist - 5.0:                # remembered box beside the path
+            log("remembered obstacle next to the path to %s -> evade" % NAME[target])
+            avoid(goal)
+            return False
+        driven, _ = drive(dist, front_stop=VISIT_DIST, sides=False)
+        s = front_sonar()
+        gap = s if s < front_gap else max(front_gap - driven, VISIT_DIST)   # echo only if it makes sense
     snap_to(target, gap)
-    log("%s visited (camera said %.0f cm, sonar now %.0f cm)" % (NAME[target], d, gap))
+    log("%s visited (camera said %.0f cm, now ~%.0f cm)" % (NAME[target], d, gap))
     back_up(30.0)                       # room to turn and leave without scraping the box
     return True
-
-
-def camera_close_in(target):
-    """Sonar found no box: face the marker on the camera, then sonar again, or drive on the
-    camera distance. Returns final sonar gap [cm], None if the marker is not in view."""
-    lms, _ = sense()
-    if target not in lms:
-        return None
-    d, a = lms[target]
-    axle = face_marker(d, a)
-    log("no echo -> re-aimed on the camera (%s at %.0f cm, %.0f deg)" % (NAME[target], d, np.degrees(a)))
-    gap = close_in()
-    if gap is None:                     # sonar still blind: trust the camera distance
-        drive(axle - SONAR_FRONT - VISIT_DIST, front_stop=VISIT_DIST + BRAKE, sides=False)
-        gap = VISIT_DIST
-    return gap
 
 
 def sonar_near(target):
