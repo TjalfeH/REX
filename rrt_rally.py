@@ -400,8 +400,6 @@ def remember(obs):
             continue
         r = d + OBST_HALF
         ox, oy, w = cx + r * np.cos(th + a), cy + r * np.sin(th + a), 1.0 / d
-        if not (-60 < ox < _W + 60 and -60 < oy < _H + 60):   # outside the arena -> misreading
-            continue
         if i in obstacles:
             px, py, pw = obstacles[i]
             ox, oy, w = (pw * px + w * ox) / (pw + w), (pw * py + w * oy) / (pw + w), pw + w
@@ -470,8 +468,9 @@ def relocalise(target):
 RRT_STEP = 10.0                         # tree extend step [cm] - small: the path hugs the obstacles
 RRT_ITER = 3000                         # max tree nodes tried
 RRT_DRIVE = 55.0                        # drive step along an RRT detour [cm] (look + check the path after each)
-RRT_MARGIN = 150.0                      # sample this far outside the landmark rectangle [cm]: > KEEP_AWAY,
-                                        # so detours can also pass obstacles and corners on the outside
+RRT_TRIES = 8                           # plan this often, keep the shortest (first path found is often the long way)
+RRT_PAD = 200.0                         # sampling area: box around start and goal + this on every side [cm].
+                                        # Centred on the route, not the arena: no side is favoured. Doubled if no path.
 DETOUR_RANGE = 160.0                    # only detour if the straight line is blocked closer than this [cm].
                                         # > STEP, so a straight step never ends inside a keep-out circle
 
@@ -506,17 +505,17 @@ def free(p, q, things):
     return first_hit(p, q, things) is None
 
 
-def rrt(start, goal, things):
+def rrt_once(start, goal, things, pad):
     """Plain RRT: grow a tree from start with random samples (10% the goal itself) until a node
-    sees the goal. Returns the path start -> goal as a list of points, or None."""
+    sees the goal. Samples in the start/goal box + pad - not limited to the arena. Returns the path start -> goal as a list of points, or None."""
     nodes, parent = [start], [None]
+    lo, hi = np.minimum(start, goal) - pad, np.maximum(start, goal) + pad
     xy = np.empty((RRT_ITER + 1, 2)); xy[0] = start     # same nodes as an array: fast nearest search
     for _ in range(RRT_ITER):
         if np.random.rand() < 0.1:
             sample = goal
         else:
-            sample = (np.random.uniform(-RRT_MARGIN, _W + RRT_MARGIN),
-                      np.random.uniform(-RRT_MARGIN, _H + RRT_MARGIN))
+            sample = tuple(np.random.uniform(lo, hi))
         n = len(nodes)
         i = int(np.argmin(np.hypot(xy[:n, 0] - sample[0], xy[:n, 1] - sample[1])))
         nx, ny = nodes[i]
@@ -533,6 +532,27 @@ def rrt(start, goal, things):
             while j is not None:
                 path.append(nodes[j]); j = parent[j]
             return path[::-1]
+    return None
+
+
+def shortcut(path, things):
+    """Drop zigzag: from each point jump to the furthest later point in a straight free line."""
+    out, i = [path[0]], 0
+    while i < len(path) - 1:
+        j = len(path) - 1
+        while j > i + 1 and not free(path[i], path[j], things):
+            j -= 1
+        out.append(path[j]); i = j
+    return out
+
+
+def rrt(start, goal, things):
+    """Best of RRT_TRIES shortcut RRT paths (shortest), or None. No path: try a wider area."""
+    length = lambda p: sum(np.hypot(q[0] - r[0], q[1] - r[1]) for q, r in zip(p, p[1:]))
+    for pad in (RRT_PAD, 2 * RRT_PAD):
+        paths = [shortcut(p, things) for p in (rrt_once(start, goal, things, pad) for _ in range(RRT_TRIES)) if p]
+        if paths:
+            return min(paths, key=length)
     return None
 
 
