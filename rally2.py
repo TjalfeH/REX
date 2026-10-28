@@ -45,13 +45,16 @@ BLIND_GAP = BLIND_STOP - (SONAR_FRONT - ROBOT_FRONT)   # expected sonar gap afte
 BLIND_SONAR_STOP = 33.0                 # front sonar abort on the blind stretch
 ECHO_RANGE = BLIND_GAP + 25.0           # close_in: an echo further away is not our box
 SEE_DIST = 160.0                        # camera should see the target from here
+NEAR = 60.0                             # pose says closer than this: no detours any more, go for the target
 
 # obstacles and paths
-KEEP_AWAY = 100.0                       # path -> non-target landmark centre
+KEEP_AWAY = 125.0                       # path -> non-target landmark centre. 40 cm from the box = a visit
+                                        # (20 box + 40 + 28 robot = 88) + ~35 for pose errors
 OBST_HALF = 12.0                        # marker face -> obstacle centre
 OBST_RADIUS = 17.5                      # obstacle radius
-OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 30.0   # detour: path -> obstacle centre
-CLEAR = OBST_RADIUS + ROBOT_RADIUS + 15.0       # min path -> obstacle centre while driving
+OBST_KEEP = OBST_RADIUS + ROBOT_RADIUS + 40.0   # detour: path -> obstacle centre (pose + map errors ~20-30 cm)
+CLEAR = OBST_RADIUS + ROBOT_RADIUS + 25.0       # min path -> obstacle centre while driving
+LM_EXTRA = KEEP_AWAY - CLEAR            # free_dist: landmarks need this much more room than obstacles
 OBST_NEAR = 80.0                        # seen obstacle closer than this straight ahead -> evade
 OBST_MAX_SEEN = 250.0                   # farther obstacle sightings are too inaccurate to remember
 STEP = 140.0                            # step when target not in view
@@ -66,7 +69,8 @@ SIDE_FREE = 60.0                        # both sides freer than this -> evade to
 # motion and camera timing
 SPEED, CM_PER_SEC, DEG_PER_SEC = 64, 46.0, 125.0
 TRIM = 2                                # right wheel faster by this -> drives straight (forward)
-FAST, FAST_CM_PER_SEC = 90, 64.0        # long free drives only - MEASURE (64.0 is a guess: 46 * 90/64)
+FAST, FAST_CM_PER_SEC = SPEED, CM_PER_SEC   # no fast drives: getting there matters more than time
+                                        # (to speed up: 90, measured cm/s - faster = less exact odometry)
 T_START = 0.15                          # start-up time of a drive [s]
 SETTLE = 0.3                            # robot standing still before a camera frame [s]
 STOP_PAUSE = 0.1                        # pause after every move; the rest of SETTLE only before a look [s]
@@ -95,6 +99,7 @@ lost_count = 0                          # updates in a row where no particle fit
 used = set()                            # landmarks the particles are based on; one landmark = only a ring
 target_now = None                       # landmark we are driving to (free_dist keeps away from the others)
 held_wp = None                          # detour waypoint we are heading for (kept until reached)
+started = False                         # visited L1 at the start? (before: we are near L1, by the rules)
 T0 = time.time()                        # run start (log time stamps)
 stats = {"sense": 0.0, "turn": 0.0, "drive": 0.0, "pause": 0.0, "n_sense": 0}
 
@@ -247,11 +252,11 @@ def free_dist(dist):
     if localised():
         x, y, th = pose()
         things = [(ox, oy, 0.0) for ox, oy, _ in obstacles.values()]
-        things += [(lx, ly, 10.0) for i, (lx, ly) in LANDMARKS.items() if i != target_now]
+        things += [(lx, ly, LM_EXTRA) for i, (lx, ly) in LANDMARKS.items() if i != target_now]
     elif len(used) == 1 and target_now not in used:
         x, y, th = P[0]
         lx, ly = LANDMARKS[next(iter(used))]
-        things = [(lx, ly, 10.0)]
+        things = [(lx, ly, LM_EXTRA)]
     else:
         return dist
     for ox, oy, extra in things:
@@ -399,6 +404,8 @@ def localised():
 
 def snap_to(lm_id, gap):
     """We face lm_id at gap [cm] (front sonar -> box side): put every particle there, keeping its heading."""
+    global started
+    started = True
     global P, last_view
     ths = wrap(P[:, 2] + np.random.normal(0, np.radians(3), len(P)))
     r = gap + BOX_HALF + SONAR_FRONT
@@ -485,14 +492,22 @@ def relocalise(target):
     return {}
 
 
+def seg_dist(x, y, wx, wy, px, py):
+    """Distance from point (px, py) to the line segment (x, y) -> (wx, wy)."""
+    dx, dy = wx - x, wy - y
+    t = max(0.0, min(1.0, ((px - x) * dx + (py - y) * dy) / max(dx * dx + dy * dy, 1e-9)))
+    return np.hypot(x + t * dx - px, y + t * dy - py)
+
+
 def detour(x, y, gx, gy, target):
     """Waypoint beside the first landmark/obstacle the straight line passes too closely.
-    Takes the side with the shorter total path; a side inside another box's zone only if both are."""
-    things = [(lx, ly, KEEP_AWAY) for i, (lx, ly) in LANDMARKS.items() if i != target]
-    things += [(ox, oy, OBST_KEEP) for ox, oy, _ in obstacles.values()]
+    Several boxes close together (a 'wall'): the waypoint moves further out until it is clear of all
+    of them AND the way there is clear. Of the two sides, the shorter total path wins."""
+    things = [(lx, ly, KEEP_AWAY, KEEP_AWAY - 10.0) for i, (lx, ly) in LANDMARKS.items() if i != target]
+    things += [(ox, oy, OBST_KEEP, CLEAR) for ox, oy, _ in obstacles.values()]
     length, th = np.hypot(gx - x, gy - y), np.arctan2(gy - y, gx - x)
     best = None
-    for j, (lx, ly, keep) in enumerate(things):
+    for j, (lx, ly, keep, _) in enumerate(things):
         along, off = along_across(x, y, th, lx, ly)
         if along >= length or along < 40:          # beyond the goal or already passed
             continue
@@ -502,15 +517,29 @@ def detour(x, y, gx, gy, target):
     if best is None:
         return None
     _, j, (nx, ny) = best
-    lx, ly, keep = things[j]
+    lx, ly, keep, _ = things[j]
     n = np.hypot(nx, ny)
+
+    def ok(wx, wy):                                # waypoint clear of the other boxes, way there clear
+        if any(np.hypot(wx - ox, wy - oy) < k for i, (ox, oy, k, _) in enumerate(things) if i != j):
+            return False                           # (a box we are already close to: just don't get closer)
+        return all(seg_dist(x, y, wx, wy, ox, oy) >= min(c, np.hypot(ox - x, oy - y) - 10)
+                   for ox, oy, _, c in things)
     options = []
     for side in (1, -1):
-        wx, wy = lx + side * (keep + 20) * nx / n, ly + side * (keep + 20) * ny / n
-        free = all(np.hypot(wx - ox, wy - oy) >= k for i, (ox, oy, k) in enumerate(things) if i != j)
-        path = np.hypot(wx - x, wy - y) + np.hypot(gx - wx, gy - wy)
-        options.append((not free, path, (wx, wy)))   # free sides first, then the shorter one
-    return min(options)[2]
+        for r in (20, 50, 80, 110, 140, 170):      # further out until clear of the whole group
+            wx, wy = lx + side * (keep + r) * nx / n, ly + side * (keep + r) * ny / n
+            if ok(wx, wy):
+                options.append((np.hypot(wx - x, wy - y) + np.hypot(gx - wx, gy - wy), (wx, wy)))
+                break
+    if not options:                                # nothing clear: the shorter side, sonar keeps us safe
+        options = [(np.hypot(gx - wx, gy - wy) + np.hypot(wx - x, wy - y), (wx, wy))
+                   for wx, wy in ((lx + (keep + 20) * nx / n, ly + (keep + 20) * ny / n),
+                                  (lx - (keep + 20) * nx / n, ly - (keep + 20) * ny / n))]
+    wp = min(options)[1]
+    if np.hypot(wp[0] - gx, wp[1] - gy) < BOX_HALF + ROBOT_RADIUS + 20:
+        return None                     # waypoint at the target box itself: just go for the target
+    return wp
 
 
 def step_detour(target, why):
@@ -558,8 +587,16 @@ def approach(target, lms):
             avoid(goal)
             return False
         driven, _ = drive(dist, front_stop=VISIT_DIST, sides=False)
+        expect = front_gap - driven                 # where the box should be now
         s = front_sonar()
-        gap = s if s < front_gap else max(front_gap - driven, VISIT_DIST)   # echo only if it makes sense
+        if s < expect - 15:                         # echo much closer than the box: something else in front
+            log("%s: echo %.0f cm, box expected at %.0f cm -> obstacle in front, evade" % (NAME[target], s, expect))
+            avoid(goal)
+            return False
+        gap = s if abs(s - expect) < 15 else expect     # echo only if it fits the camera distance
+    if gap > 38:                        # not within the 40 cm yet (rule): look again, don't claim it
+        log("%s still %.0f cm away -> look again" % (NAME[target], gap))
+        return False
     snap_to(target, gap)
     log("%s visited (camera said %.0f cm, now ~%.0f cm)" % (NAME[target], d, gap))
     back_up(30.0)                       # room to turn and leave without scraping the box
@@ -582,6 +619,11 @@ def sonar_near(target):
             % (s, NAME[target], expected, list(obs)))
         avoid((gx, gy))
         return False
+    if s < 40 and expected < 40 + SONAR_MATCH:     # pose and sonar both: we are within 40 cm
+        snap_to(target, s)
+        log("%s visited on sonar (%.0f cm, pose said %.0f cm)" % (NAME[target], s, expected))
+        back_up(30.0)
+        return True
     if not abs(s - expected) < SONAR_MATCH:
         log("sonar %.0f cm, expected %.0f cm -> relocalise" % (s, expected))
         add_noise(80.0, np.radians(30))
@@ -618,7 +660,10 @@ def toward_unseen(target):
     gap = np.hypot(gx - x, gy - y) - BOX_HALF - ROBOT_FRONT
     log("pose x=%.0f y=%.0f th=%.0f deg | spread %.0f/%.0f cm, heading %.2f | %s gap %.0f cm"
         % ((x, y, np.degrees(th)) + spread() + (NAME[target], gap)))
-    if step_detour(target, "%s not in view" % NAME[target]):   # also near the target: a box may hide it
+    global held_wp
+    if gap < NEAR:                                  # right next to it: detours would only lead
+        held_wp = None                              # around and along the box -> go for it
+    elif step_detour(target, "%s not in view" % NAME[target]):   # a box may hide it
         return False
     if gap >= SEE_DIST:
         step_to((gx, gy), min(STEP, gap - SEE_DIST + 20))
@@ -626,7 +671,7 @@ def toward_unseen(target):
     turn(wrap(np.arctan2(gy - y, gx - x) - th))    # should be visible: face it and look around
     if target in scan(target, AHEAD_SCAN):
         return False
-    if step_detour(target, "scan found a box"):    # the scan may just have found the hiding box
+    if gap >= NEAR and step_detour(target, "scan found a box"):   # the scan may have found the hiding box
         return False
     log("%s not visible -> moving closer" % NAME[target])
     if gap > BLIND_DIST:
@@ -647,7 +692,7 @@ def go_to(target):
         elif target in lms:
             if toward_seen(target, lms, obs):
                 return True
-        elif not localised() and far:   # one far landmark is not enough: head for it, near the
+        elif not localised() and far and started:   # one far landmark is not enough: head for it, near the
             d, a = min(far.values())    # arena corner more landmarks come into view
             turn(a)
             dist = free_dist(min(100.0, d - 100.0))
@@ -665,11 +710,19 @@ def start_visit():
     global P, used, target_now
     target_now = L1
     lms, _ = sense()
-    s = front_sonar()
-    if L1 in lms or s > 120:
+    if L1 in lms:
+        return False
+    s, cur = front_sonar(), 0
+    for a in (-20, 20):                 # facing a box face at an angle: the echo may miss -> look left/right
+        if s <= 120:
+            break
+        turn(np.radians(a - cur)); cur = a
+        s = front_sonar()
+    if s > 120:
+        turn(np.radians(-cur))
         return False
     log("L1 too close for the camera, sonar %.0f cm -> drive in on the sonar" % s)
-    drive(s - BLIND_GAP, front_stop=BLIND_SONAR_STOP)
+    drive(s - 50, front_stop=BLIND_SONAR_STOP)
     gap = close_in()
     if gap is None:
         return False
