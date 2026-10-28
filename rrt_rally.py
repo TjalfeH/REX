@@ -23,7 +23,7 @@ import numpy as np
 import camera, robot
 
 # ---- constants [cm] ----------------------------------------------------------------
-BOX_HALF = 20.0                         # half landmark box side
+BOX_HALF = 10.0                         # half landmark box side
 INNER_H, INNER_W = 300.0, 400.0         # distances between INNER box sides
 L1, L2, L3, L4 = 11, 10, 9, 8            # PRACTICE IDs. Race day: 1, 2, 3, 4 !
 ROBOT_FRONT = 21.0                      # axle -> camera
