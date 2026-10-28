@@ -471,6 +471,7 @@ RRT_DRIVE = 55.0                        # drive step along an RRT detour [cm] (l
 RRT_TRIES = 8                           # plan this often, keep the shortest (first path found is often the long way)
 RRT_PAD = 200.0                         # sampling area: box around start and goal + this on every side [cm].
                                         # Centred on the route, not the arena: no side is favoured. Doubled if no path.
+ARENA_OUT = 120.0                       # no part of the robot more than this outside the landmark rectangle [cm]
 DETOUR_RANGE = 160.0                    # only detour if the straight line is blocked closer than this [cm].
                                         # > STEP, so a straight step never ends inside a keep-out circle
 
@@ -507,9 +508,13 @@ def free(p, q, things):
 
 def rrt_once(start, goal, things, pad):
     """Plain RRT: grow a tree from start with random samples (10% the goal itself) until a node
-    sees the goal. Samples in the start/goal box + pad - not limited to the arena. Returns the path start -> goal as a list of points, or None."""
+    sees the goal. Samples in the start/goal box + pad, at most ARENA_OUT outside the arena
+    (box is convex: every tree edge stays inside it too). Returns the path start -> goal as a list of points, or None."""
     nodes, parent = [start], [None]
     lo, hi = np.minimum(start, goal) - pad, np.maximum(start, goal) + pad
+    out = ARENA_OUT - ROBOT_RADIUS      # the centre's limit: the robot reaches ROBOT_RADIUS further
+    lo = np.maximum(lo, (-out, -out)); hi = np.minimum(hi, (_W + out, _H + out))
+    lo, hi = np.minimum(lo, start), np.maximum(hi, start)   # we may already be outside: drive back in
     xy = np.empty((RRT_ITER + 1, 2)); xy[0] = start     # same nodes as an array: fast nearest search
     for _ in range(RRT_ITER):
         if np.random.rand() < 0.1:
