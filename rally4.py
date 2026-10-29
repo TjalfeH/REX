@@ -10,7 +10,7 @@ import numpy as np
 import camera, robot
 
 BOX_HALF = 20.0                                     # half side of a landmark box
-L1, L2, L3, L4 = 11, 10, 9, 8                       # practice IDs - race day: 1, 2, 3, 4 !
+L1, L2, L3, L4 = 1, 2, 3, 4                         # practice IDs - race day: 1, 2, 3, 4 !
 ROBOT_FRONT, ROBOT_RADIUS, SONAR_FRONT = 21.0, 28.0, 28.0   # axle -> camera, radius, axle -> sonar
 CAM_F, MARKER_SIZE = 1315.0, 0.145                  # calibration from Ex4
 W, H = 400.0 + 2 * BOX_HALF, 300.0 + 2 * BOX_HALF   # box centre to box centre
