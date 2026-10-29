@@ -23,7 +23,7 @@ import camera, robot
 # ---- arena [cm] ----------------------------------------------------------------------
 BOX_HALF = 20.0                         # half side of a landmark box
 INNER_H, INNER_W = 300.0, 400.0         # distance between the inner box sides
-L1, L2, L3, L4 = 11, 10, 9, 8           # practice IDs - race day: 1, 2, 3, 4 !
+L1, L2, L3, L4 = 1, 2, 3, 4             # practice IDs - race day: 1, 2, 3, 4 !
 ROBOT_FRONT = 21.0                      # axle -> camera
 ROBOT_RADIUS = 28.0                     # robot radius
 SONAR_FRONT = 28.0                      # axle -> front sonar (measure!)
